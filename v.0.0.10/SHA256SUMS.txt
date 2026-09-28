@@ -1,0 +1,2 @@
+0b8235eb58ec2dcd0f2560d6c4aa1bdeac97745f576073e11056b61f96b49ad9  srcinsight-v0.0.10-linux-amd64
+a710f72bafc916b1023f2af355e82b1246512cfe295f25e040a9b73af50ab784  srcinsight-v0.0.10-windows-amd64.exe
