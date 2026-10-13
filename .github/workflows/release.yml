@@ -1,0 +1,99 @@
+name: Release
+
+# Version = exactly the tag you push (SemVer):
+#   git tag v0.2.0 && git push origin v0.2.0
+#   PATCH (v0.1.0 -> v0.1.1) = bugfix
+#   MINOR (v0.1.1 -> v0.2.0) = new feature, compatible
+#   MAJOR (v0.9.3 -> v1.0.0) = breaking change
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.5"
+  CGO_ENABLED: "1"
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install C toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Build (native per-OS, CGO required by tree-sitter/libsql)
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          SHA="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Building srcinsight ${VERSION} (${SHA} ${DATE}) for ${GOOS}/${GOARCH}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${SHA} -X main.date=${DATE}" \
+            -o "dist/srcinsight-${VERSION}-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/srcinsight
+
+      - name: Smoke test version flag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BIN="dist/srcinsight-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          "$BIN" version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srcinsight-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish release (version = tag name, e.g. v0.2.0)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

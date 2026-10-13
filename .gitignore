@@ -1,0 +1,21 @@
+# Binaries
+./srcinsight
+srcinsight.exe
+*.exe
+dist/
+
+# Go build cache / test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Local index databases
+.srcinsight/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
