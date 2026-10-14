@@ -3,8 +3,9 @@
 Source Insight is a Program Structure Weaver; it reads the codebase or software project that has been designated for indexing.
 
 It is currently utilized by [Codryn](https://github.com/BlankPage-Ctrl/Codryn) as a component to assist the AI ​​in locating specific functions while prioritizing speed of comprehension.
-> ![NOTE]
+> [!NOTE]
 > SrcInsight is currently in the **Alpha stage**, and various aspects are being developed to ensure stability.
+
 ### Language Support
 
 Currently indexed:
@@ -16,7 +17,7 @@ Currently indexed:
 Relationships captured include calls and called-by, extends and implements, parameter and return types, constant value usage, and per-file imports.
 
 ### Things you should know
-
+- SrcInsight Pre-builds binary are only available for Windows and Linux (AMD64 architecture), **For now**.
 - SrcInsight will attempt to keep itself up to date with changes to your codebase or software project.
 - SrcInsight does not send the code in your codebase or software project to any network; it remains entirely on your device.
 - SrcInsight supports frameworks such as NestJS, React, and Vue, with others coming later.
@@ -40,7 +41,7 @@ Index output for that corpus: 21,215 entries and 61,207 resolved links, stored i
 
 Machine: Intel Core i7 M 620 (4 threads), 7.8 GiB RAM, Windows 10, Go 1.27.1, 3 parse workers.
 
-> ![IMPORTANT]
+> [!IMPORTANT]
 > The data above represents the most recent benchmark results; the figures may be slower than those from the benchmark conducted on [October 4, 2026](scripts/result/benchmark-2026-10-04.md), on Windows (alongside Linux) on the same machine.
 
 ## Status and Scope
@@ -49,4 +50,4 @@ SrcInsight focuses on structure, not on type checking, linting, or execution. Ex
 
 ## License
 
-MIT.
+[MIT](./LICENSE).
