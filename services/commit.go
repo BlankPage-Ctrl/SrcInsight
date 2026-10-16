@@ -13,11 +13,17 @@ const bulkCommitThreshold = 20
 
 // commitBulk writes bundles with the bulk recipe and restores pragmas on failure.
 func (p *Pipeline) commitBulk(ctx context.Context, bundles []OriginBundleAlias, fresh bool) error {
-	if err := p.resolveOutgoingBatch(ctx, bundles); err != nil {
-		return err
-	}
-	if err := commitBulkBundles(ctx, p.vault, bundles, fresh); err != nil {
-		return err
+	if shouldChunkCommit(bundles) {
+		if err := p.commitBulkChunked(ctx, bundles, fresh); err != nil {
+			return err
+		}
+	} else {
+		if err := p.resolveOutgoingBatch(ctx, bundles); err != nil {
+			return err
+		}
+		if err := commitBulkBundles(ctx, p.vault, bundles, fresh); err != nil {
+			return err
+		}
 	}
 	if fresh {
 		return nil

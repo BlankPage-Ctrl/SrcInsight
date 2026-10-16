@@ -52,6 +52,26 @@ func (lc *LookupCache) CandidatePaths(r ImportResolver, file, source string) []s
 	return out
 }
 
+// Clone copies primed entries for one resolve worker.
+// Slices stay shared read-only; rows are never mutated in place.
+func (lc *LookupCache) Clone() *LookupCache {
+	out := NewLookupCache()
+	if lc == nil {
+		return out
+	}
+	out.known = lc.known
+	for k, v := range lc.pairs {
+		out.pairs[k] = v
+	}
+	for k, v := range lc.imports {
+		out.imports[k] = v
+	}
+	for k, v := range lc.paths {
+		out.paths[k] = v
+	}
+	return out
+}
+
 func PairKey(file, name string) string {
 	return file + "\x00" + strings.ToLower(name)
 }

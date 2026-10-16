@@ -598,61 +598,85 @@ func ResolveRecvBatch(ctx context.Context, s resolve.Store, bundles []cold.Origi
 	}
 	sv := newRecvSolver(s, bundles, pending, lc)
 	for i := range bundles {
-		b := &bundles[i]
-		if b.Origin.Dialect != model.LangTypeScript {
-			continue
+		if err := resolveRecvOne(ctx, sv, &bundles[i]); err != nil {
+			return err
 		}
-		if !HasRecvCalls(b.LooseEnds) {
-			continue
-		}
+	}
+	return nil
+}
+
+// ResolveRecvShard resolves only idx bundles with a solver over all bundles.
+// The solver needs whole-batch imports, binds, and links; memos stay worker-local.
+func ResolveRecvShard(ctx context.Context, s resolve.Store, bundles []cold.OriginBundle, idx []int, pending resolve.Pending, lc *resolve.LookupCache) error {
+	if lc == nil {
+		lc = resolve.NewLookupCache()
+	}
+	sv := newRecvSolver(s, bundles, pending, lc)
+	for _, i := range idx {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		imps := b.Imports
-		binds := b.RecvBinds
-		seenLink := make(map[cold.LinkRow]struct{}, len(b.Links))
-		for _, l := range b.Links {
-			seenLink[l] = struct{}{}
+		if err := resolveRecvOne(ctx, sv, &bundles[i]); err != nil {
+			return err
 		}
-		quals := make(map[model.EntryID]string, len(b.LooseEnds))
-		for _, le := range b.LooseEnds {
-			if r, ok := sv.byID[le.From]; ok {
-				quals[le.From] = r.Qualified
-			}
-		}
-		var keepLoose []cold.LooseEndRow
-		for _, le := range b.LooseEnds {
-			if le.Kind != model.EdgeCalls {
-				keepLoose = append(keepLoose, le)
-				continue
-			}
-			recv, simple := resolve.SplitCrossRecv(le.Name)
-			if recv == "" || recv == "this" || recv == "self" {
-				keepLoose = append(keepLoose, le)
-				continue
-			}
-			targets, err := sv.attemptOne(ctx, b.Origin.Path, imps, binds, le.From, quals[le.From], recv, simple, b.Origin.Dialect)
-			if err != nil {
-				return err
-			}
-			if len(targets) == 0 {
-				keepLoose = append(keepLoose, le)
-				continue
-			}
-			for _, t := range targets {
-				lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
-				if !lr.Valid() {
-					continue
-				}
-				if _, dup := seenLink[lr]; dup {
-					continue
-				}
-				seenLink[lr] = struct{}{}
-				b.Links = append(b.Links, lr)
-			}
-		}
-		b.LooseEnds = keepLoose
 	}
+	return nil
+}
+
+func resolveRecvOne(ctx context.Context, sv *recvSolver, b *cold.OriginBundle) error {
+	if b.Origin.Dialect != model.LangTypeScript {
+		return nil
+	}
+	if !HasRecvCalls(b.LooseEnds) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	imps := b.Imports
+	binds := b.RecvBinds
+	seenLink := make(map[cold.LinkRow]struct{}, len(b.Links))
+	for _, l := range b.Links {
+		seenLink[l] = struct{}{}
+	}
+	quals := make(map[model.EntryID]string, len(b.LooseEnds))
+	for _, le := range b.LooseEnds {
+		if r, ok := sv.byID[le.From]; ok {
+			quals[le.From] = r.Qualified
+		}
+	}
+	var keepLoose []cold.LooseEndRow
+	for _, le := range b.LooseEnds {
+		if le.Kind != model.EdgeCalls {
+			keepLoose = append(keepLoose, le)
+			continue
+		}
+		recv, simple := resolve.SplitCrossRecv(le.Name)
+		if recv == "" || recv == "this" || recv == "self" {
+			keepLoose = append(keepLoose, le)
+			continue
+		}
+		targets, err := sv.attemptOne(ctx, b.Origin.Path, imps, binds, le.From, quals[le.From], recv, simple, b.Origin.Dialect)
+		if err != nil {
+			return err
+		}
+		if len(targets) == 0 {
+			keepLoose = append(keepLoose, le)
+			continue
+		}
+		for _, t := range targets {
+			lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+			if !lr.Valid() {
+				continue
+			}
+			if _, dup := seenLink[lr]; dup {
+				continue
+			}
+			seenLink[lr] = struct{}{}
+			b.Links = append(b.Links, lr)
+		}
+	}
+	b.LooseEnds = keepLoose
 	return nil
 }
 

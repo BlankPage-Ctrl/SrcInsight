@@ -20,6 +20,11 @@ func (p *Pipeline) resolveRecvBatch(ctx context.Context, bundles []cold.OriginBu
 	return tspkg.ResolveRecvBatch(ctx, p, bundles, pending, lc)
 }
 
+// resolveRecvShard resolves one worker's bundles with whole-batch visibility.
+func (p *Pipeline) resolveRecvShard(ctx context.Context, bundles []cold.OriginBundle, idx []int, pending resolve.Pending, lc *resolve.LookupCache) error {
+	return tspkg.ResolveRecvShard(ctx, p, bundles, idx, pending, lc)
+}
+
 // promoteRecvReverse revisits loose ends bound to freshly indexed types.
 func (p *Pipeline) promoteRecvReverse(ctx context.Context, bundles []cold.OriginBundle) error {
 	return tspkg.PromoteRecvReverse(ctx, p, bundles)
