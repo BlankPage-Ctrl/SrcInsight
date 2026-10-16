@@ -8,41 +8,43 @@ import (
 // statements holds every prepared statement, prepared once at Open and
 // reused for the vault lifetime.
 type statements struct {
-	upsertOrigin          *sql.Stmt
-	deleteOrigin          *sql.Stmt
-	originByPath          *sql.Stmt
-	allOrigins            *sql.Stmt
-	insertEntry           *sql.Stmt
-	entriesByFile         *sql.Stmt
-	allEntries            *sql.Stmt
-	deleteEntriesByFile   *sql.Stmt
-	entryByID             *sql.Stmt
-	insertLink            *sql.Stmt
-	allLinks              *sql.Stmt
-	incomingLinks         *sql.Stmt
-	targetByKindName      *sql.Stmt
-	targetByFileAndName   *sql.Stmt
-	insertBroughtIn       *sql.Stmt
-	deleteBroughtInByFile *sql.Stmt
-	allBroughtIn          *sql.Stmt
-	broughtInByFile       *sql.Stmt
-	insertRecvBind        *sql.Stmt
-	deleteRecvBindByFile  *sql.Stmt
-	recvBindsByFile       *sql.Stmt
-	recvBindsByType       *sql.Stmt
-	looseEndsByFile       *sql.Stmt
-	insertLooseEnd        *sql.Stmt
-	allLooseEnds          *sql.Stmt
-	deleteLooseEnd        *sql.Stmt
-	looseEndsByOwner      *sql.Stmt
-	putMeta               *sql.Stmt
-	getMeta               *sql.Stmt
-	countEntries          *sql.Stmt
-	countLinks            *sql.Stmt
-	searchExact           *sql.Stmt
-	searchPrefix          *sql.Stmt
-	searchSubstr          *sql.Stmt
-	searchFTS             *sql.Stmt
+	upsertOrigin              *sql.Stmt
+	deleteOrigin              *sql.Stmt
+	originByPath              *sql.Stmt
+	allOrigins                *sql.Stmt
+	insertEntry               *sql.Stmt
+	entriesByFile             *sql.Stmt
+	allEntries                *sql.Stmt
+	deleteEntriesByFile       *sql.Stmt
+	entryByID                 *sql.Stmt
+	insertLink                *sql.Stmt
+	allLinks                  *sql.Stmt
+	incomingLinks             *sql.Stmt
+	targetByKindName          *sql.Stmt
+	targetByFileAndName       *sql.Stmt
+	insertBroughtIn           *sql.Stmt
+	deleteBroughtInByFile     *sql.Stmt
+	allBroughtIn              *sql.Stmt
+	broughtInByFile           *sql.Stmt
+	insertRecvBind            *sql.Stmt
+	deleteRecvBindByFile      *sql.Stmt
+	recvBindsByFile           *sql.Stmt
+	recvBindsByType           *sql.Stmt
+	looseEndsByFile           *sql.Stmt
+	insertLooseEnd            *sql.Stmt
+	allLooseEnds              *sql.Stmt
+	deleteLooseEnd            *sql.Stmt
+	looseEndsByOwner          *sql.Stmt
+	deleteTransportEPByFile   *sql.Stmt
+	deleteTransportCallByFile *sql.Stmt
+	putMeta                   *sql.Stmt
+	getMeta                   *sql.Stmt
+	countEntries              *sql.Stmt
+	countLinks                *sql.Stmt
+	searchExact               *sql.Stmt
+	searchPrefix              *sql.Stmt
+	searchSubstr              *sql.Stmt
+	searchFTS                 *sql.Stmt
 	// Fixed-bucket file plus names lookups: one prepared statement per size.
 	searchTargetsB32  *sql.Stmt
 	searchTargetsB128 *sql.Stmt
@@ -100,6 +102,8 @@ func prepareAll(db *sql.DB) (*statements, error) {
 		{&s.allLooseEnds, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends ORDER BY from_entry, ref_name, site_start, site_end`},
 		{&s.deleteLooseEnd, `DELETE FROM loose_ends WHERE from_entry = ? AND ref_name = ? AND ref_kind = ? AND site_start = ? AND site_end = ?`},
 		{&s.looseEndsByOwner, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends WHERE from_entry = ? ORDER BY ref_name, ref_kind, site_start, site_end`},
+		{&s.deleteTransportEPByFile, `DELETE FROM transport_endpoints WHERE file_path = ?`},
+		{&s.deleteTransportCallByFile, `DELETE FROM transport_calls WHERE file_path = ?`},
 		{&s.putMeta, `INSERT INTO vault_meta (key, value, updated_at) VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`},
 		{&s.getMeta, `SELECT value FROM vault_meta WHERE key = ?`},

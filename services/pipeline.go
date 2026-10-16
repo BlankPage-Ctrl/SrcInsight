@@ -13,7 +13,7 @@ import (
 )
 
 // ExtractorVersion forces a full rescan when extractor output changes shape.
-const ExtractorVersion = "9"
+const ExtractorVersion = "10"
 
 // SyncResult counts one write run; FilesChecked is the live source count.
 type SyncResult struct {

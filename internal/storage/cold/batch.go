@@ -286,17 +286,21 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, w *bulkWriter, bundles [
 	return nil
 }
 
-// insertRestBatchTx writes all imports + loose ends + recv binds multi-row.
+// insertRestBatchTx writes all imports + loose ends + recv binds + transport hints multi-row.
 func (v *Vault) insertRestBatchTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle) error {
-	totalImps, totalLoose, totalBinds := 0, 0, 0
+	totalImps, totalLoose, totalBinds, totalEPs, totalCalls := 0, 0, 0, 0, 0
 	for _, b := range bundles {
 		totalImps += len(b.Imports)
 		totalLoose += len(b.LooseEnds)
 		totalBinds += len(b.RecvBinds)
+		totalEPs += len(b.Endpoints)
+		totalCalls += len(b.Calls)
 	}
 	imps := make([]ImportRow, 0, totalImps)
 	loose := make([]LooseEndRow, 0, totalLoose)
 	binds := make([]RecvBindRow, 0, totalBinds)
+	endpoints := make([]TransportEndpointRow, 0, totalEPs)
+	calls := make([]TransportCallRow, 0, totalCalls)
 	// Loose ends must resolve to a written entry; From always lives in the
 	// same bundle, so filter against this batch's valid entry IDs. Without
 	// this, a skipped entry would leave a dangling loose end behind.
@@ -322,6 +326,16 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, w *bulkWriter, bundles []
 		for _, r := range b.RecvBinds {
 			if r.Valid() {
 				binds = append(binds, r)
+			}
+		}
+		for _, r := range b.Endpoints {
+			if r.Valid() {
+				endpoints = append(endpoints, r)
+			}
+		}
+		for _, r := range b.Calls {
+			if r.Valid() {
+				calls = append(calls, r)
 			}
 		}
 	}
@@ -411,6 +425,50 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, w *bulkWriter, bundles []
 		i = end
 	}
 	v.wtAdd("rest.binds", tbBind, teBind, ncBind)
+	for i := 0; i < len(endpoints); {
+		end := min(i+chunkRows(9), len(endpoints))
+		chunk := endpoints[i:end]
+		var sb strings.Builder
+		sb.Grow(128 + len(chunk)*64)
+		sb.WriteString(`INSERT INTO transport_endpoints (file_path, owner, transport, method, path, operation, framework, site_start) VALUES `)
+		args := make([]any, 0, len(chunk)*8)
+		for j, r := range chunk {
+			if j > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(`(?,?,?,?,?,?,?,?)`)
+			args = append(args, r.FilePath, string(r.Owner), r.Transport, r.Method, r.Path, r.Operation, r.Framework, r.SiteStart)
+		}
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
+			return fmt.Errorf("cold: batch transport endpoints [%d:%d]: %w", i, end, err)
+		}
+		i = end
+	}
+	for i := 0; i < len(calls); {
+		end := min(i+chunkRows(9), len(calls))
+		chunk := calls[i:end]
+		var sb strings.Builder
+		sb.Grow(128 + len(chunk)*64)
+		sb.WriteString(`INSERT INTO transport_calls (file_path, owner, transport, method, url, operation, lib, site_start) VALUES `)
+		args := make([]any, 0, len(chunk)*8)
+		for j, r := range chunk {
+			if j > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(`(?,?,?,?,?,?,?,?)`)
+			args = append(args, r.FilePath, string(r.Owner), r.Transport, r.Method, r.URL, r.Operation, r.Lib, r.SiteStart)
+		}
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
+			return fmt.Errorf("cold: batch transport calls [%d:%d]: %w", i, end, err)
+		}
+		i = end
+	}
 	return nil
 }
 

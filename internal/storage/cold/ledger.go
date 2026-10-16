@@ -58,6 +58,12 @@ func (v *Vault) ForgetOrigin(ctx context.Context, path string) error {
 		if _, err := tx.StmtContext(ctx, v.stmts.deleteRecvBindByFile).ExecContext(ctx, path); err != nil {
 			return fmt.Errorf("cold: forget recv binds %s: %w", path, err)
 		}
+		if _, err := tx.StmtContext(ctx, v.stmts.deleteTransportEPByFile).ExecContext(ctx, path); err != nil {
+			return fmt.Errorf("cold: forget transport endpoints %s: %w", path, err)
+		}
+		if _, err := tx.StmtContext(ctx, v.stmts.deleteTransportCallByFile).ExecContext(ctx, path); err != nil {
+			return fmt.Errorf("cold: forget transport calls %s: %w", path, err)
+		}
 		if _, err := tx.StmtContext(ctx, v.stmts.deleteOrigin).ExecContext(ctx, path); err != nil {
 			return fmt.Errorf("cold: forget origin %s: %w", path, err)
 		}

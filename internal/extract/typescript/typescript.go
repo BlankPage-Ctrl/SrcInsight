@@ -251,6 +251,15 @@ func Extract(path string, src []byte, tree *sitter.Tree) (extract.FileExtract, e
 	allCalls := collectAllCalls(q, src, root)
 	allCalls = append(allCalls, collectAllJSX(q, src, root)...)
 
+	fe.RecvBindings = collectRecvBindings(q, src, root)
+	fe.Imports = collectImports(q, src, root)
+	fe.Imports = append(fe.Imports, collectReExports(q, src, root)...)
+	byLocal := make(map[string]string, len(fe.Imports))
+	for _, im := range fe.Imports {
+		byLocal[im.LocalName] = im.Source
+	}
+	prefixes := controllerPrefixes(src, root)
+
 	for _, d := range defs {
 		fn := buildFunction(path, src, d.node, d.kind, comments)
 		if d.kind == model.KindConst {
@@ -265,10 +274,12 @@ func Extract(path string, src []byte, tree *sitter.Tree) (extract.FileExtract, e
 			fn.Tags = append(fn.Tags, frontend.TagsFor(path, src, d.node, fn.Name, fn.Kind)...)
 		}
 		fe.Functions = append(fe.Functions, fn)
+		fe.Endpoints = append(fe.Endpoints, transportEndpointsForDef(src, d.node, fn, prefixes)...)
+		if d.kind != model.KindConst {
+			fe.Calls = append(fe.Calls, transportCallsForDef(src, d.node, fn, byLocal)...)
+		}
 	}
-	fe.RecvBindings = collectRecvBindings(q, src, root)
-	fe.Imports = collectImports(q, src, root)
-	fe.Imports = append(fe.Imports, collectReExports(q, src, root)...)
+	fe.Endpoints = append(fe.Endpoints, fileLevelExpressRoutes(src, root)...)
 	return fe, nil
 }
 

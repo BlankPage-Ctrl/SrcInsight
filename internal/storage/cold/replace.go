@@ -99,6 +99,12 @@ func (v *Vault) clearOrigin(ctx context.Context, tx *sql.Tx, path string) error 
 	if _, err := tx.StmtContext(ctx, v.stmts.deleteRecvBindByFile).ExecContext(ctx, path); err != nil {
 		return fmt.Errorf("cold: replace clear recv binds %s: %w", path, err)
 	}
+	if _, err := tx.StmtContext(ctx, v.stmts.deleteTransportEPByFile).ExecContext(ctx, path); err != nil {
+		return fmt.Errorf("cold: replace clear transport endpoints %s: %w", path, err)
+	}
+	if _, err := tx.StmtContext(ctx, v.stmts.deleteTransportCallByFile).ExecContext(ctx, path); err != nil {
+		return fmt.Errorf("cold: replace clear transport calls %s: %w", path, err)
+	}
 	if _, err := tx.StmtContext(ctx, v.stmts.deleteOrigin).ExecContext(ctx, path); err != nil {
 		return fmt.Errorf("cold: replace clear origin %s: %w", path, err)
 	}

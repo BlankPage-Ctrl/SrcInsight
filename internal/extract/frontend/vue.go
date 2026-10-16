@@ -260,6 +260,12 @@ func ShiftLines(fe *model.FileExtract, delta int, realPath string) {
 			}
 		}
 	}
+	for i := range fe.Endpoints {
+		fe.Endpoints[i].Line += delta
+	}
+	for i := range fe.Calls {
+		fe.Calls[i].Line += delta
+	}
 }
 
 // Container-less methods bind to the component, so names read Card.save.

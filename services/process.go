@@ -205,6 +205,7 @@ func (p *Pipeline) buildBundle(r rawFile) (bundle, fault cold.OriginBundle, skip
 			bindRows = append(bindRows, cold.RecvBindRowOf(r.df.Rel, f.QualifiedName(), h))
 		}
 	}
+	endpoints, calls := transportRows(fe, fns)
 	return cold.OriginBundle{
 		Origin: cold.OriginRecord{
 			Path:        r.df.Rel,
@@ -218,6 +219,8 @@ func (p *Pipeline) buildBundle(r rawFile) (bundle, fault cold.OriginBundle, skip
 		Imports:   impRows,
 		LooseEnds: loose,
 		RecvBinds: bindRows,
+		Endpoints: endpoints,
+		Calls:     calls,
 	}, cold.OriginBundle{}, false
 }
 
@@ -286,6 +289,8 @@ func (p *Pipeline) extractVue(rel string, src []byte) (model.FileExtract, error)
 			fe.Functions = append(fe.Functions, sfe.Functions...)
 			fe.Imports = append(fe.Imports, sfe.Imports...)
 			fe.RecvBindings = append(fe.RecvBindings, sfe.RecvBindings...)
+			fe.Endpoints = append(fe.Endpoints, sfe.Endpoints...)
+			fe.Calls = append(fe.Calls, sfe.Calls...)
 			return nil
 		})
 		if err != nil {

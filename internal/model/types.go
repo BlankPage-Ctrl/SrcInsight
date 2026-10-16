@@ -226,6 +226,7 @@ const (
 	EdgeParam      = "param"
 	EdgeReturn     = "return"
 	EdgeUses       = "uses"
+	EdgeTransport  = "transport"
 )
 
 // Edge links two functions; zero SiteRange means unknown.
@@ -256,13 +257,37 @@ type RecvBinding struct {
 	ViaCall string `json:"viaCall,omitempty"`
 }
 
+// TransportEndpoint is one server route hint from extract; Owner fills in after indexing.
+type TransportEndpoint struct {
+	Transport string `json:"transport"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	Operation string `json:"operation"`
+	Framework string `json:"framework"`
+	Func      string `json:"func"`
+	Line      int    `json:"line"`
+}
+
+// TransportCall is one client fetch hint from extract; Owner fills in after indexing.
+type TransportCall struct {
+	Transport string `json:"transport"`
+	Method    string `json:"method"`
+	URL       string `json:"url"`
+	Operation string `json:"operation"`
+	Lib       string `json:"lib"`
+	Func      string `json:"func"`
+	Line      int    `json:"line"`
+}
+
 // FileExtract is the canonical per-file result shared by extractors, indexer, and resolver.
 type FileExtract struct {
-	Path         string        `json:"path"`
-	Language     Language      `json:"language"`
-	Functions    []Function    `json:"functions"`
-	Imports      []ImportStmt  `json:"imports"`
-	RecvBindings []RecvBinding `json:"recvBindings,omitempty"`
+	Path         string              `json:"path"`
+	Language     Language            `json:"language"`
+	Functions    []Function          `json:"functions"`
+	Imports      []ImportStmt        `json:"imports"`
+	RecvBindings []RecvBinding       `json:"recvBindings,omitempty"`
+	Endpoints    []TransportEndpoint `json:"endpoints,omitempty"`
+	Calls        []TransportCall     `json:"calls,omitempty"`
 }
 
 // Graph is a set of nodes and directed edges.

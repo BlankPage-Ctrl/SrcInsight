@@ -232,6 +232,89 @@ type LooseEndRow struct {
 	Cond      string
 }
 
+// TransportEndpointRow is one server route hint. Path is already normalized
+// (:id/{id}/[id]/* folded); Method is uppercased. Owner is the handler entry,
+// empty for file-scope routes (express router.get at module scope).
+type TransportEndpointRow struct {
+	FilePath  string
+	Owner     model.EntryID
+	Transport string
+	Method    string
+	Path      string
+	Operation string
+	Framework string
+	SiteStart int
+}
+
+// Valid reports whether the row carries a matchable key: a normalized path
+// for HTTP, or an operation name for GraphQL/WS.
+func (r TransportEndpointRow) Valid() bool {
+	if r.FilePath == "" {
+		return false
+	}
+	if r.Operation != "" {
+		return true
+	}
+	return r.Path != ""
+}
+
+// TransportEndpointRowOf converts a model hint plus its resolved owner.
+func TransportEndpointRowOf(filePath string, owner model.EntryID, e model.TransportEndpoint, siteStart int) TransportEndpointRow {
+	return TransportEndpointRow{
+		FilePath:  filePath,
+		Owner:     owner,
+		Transport: e.Transport,
+		Method:    e.Method,
+		Path:      e.Path,
+		Operation: e.Operation,
+		Framework: e.Framework,
+		SiteStart: siteStart,
+	}
+}
+
+// TransportCallRow is one client fetch hint. URL is the normalized path.
+type TransportCallRow struct {
+	FilePath  string
+	Owner     model.EntryID
+	Transport string
+	Method    string
+	URL       string
+	Operation string
+	Lib       string
+	SiteStart int
+}
+
+// Valid reports whether the row carries a matchable key.
+func (r TransportCallRow) Valid() bool {
+	if r.FilePath == "" || r.Owner == "" {
+		return false
+	}
+	if r.Operation != "" {
+		return true
+	}
+	return r.URL != "" && !isEndpointMarker(r.URL)
+}
+
+// isEndpointMarker reports the internal express-route marker, which rides the
+// Calls slice only to reach file-level collection and never the vault.
+func isEndpointMarker(url string) bool {
+	return len(url) > 13 && url[:14] == "__endpoint__:"
+}
+
+// TransportCallRowOf converts a model hint plus its resolved owner.
+func TransportCallRowOf(filePath string, owner model.EntryID, c model.TransportCall, siteStart int) TransportCallRow {
+	return TransportCallRow{
+		FilePath:  filePath,
+		Owner:     owner,
+		Transport: c.Transport,
+		Method:    c.Method,
+		URL:       c.URL,
+		Operation: c.Operation,
+		Lib:       c.Lib,
+		SiteStart: siteStart,
+	}
+}
+
 // ScoredEntryRow is one search hit with its ranking signal. Score is raw
 // FTS5 bm25 (negative, smaller means more relevant); other modes score 0.
 type ScoredEntryRow struct {
@@ -250,4 +333,6 @@ type OriginBundle struct {
 	Imports   []ImportRow
 	LooseEnds []LooseEndRow
 	RecvBinds []RecvBindRow
+	Endpoints []TransportEndpointRow
+	Calls     []TransportCallRow
 }

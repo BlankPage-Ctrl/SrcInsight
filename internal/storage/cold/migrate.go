@@ -8,7 +8,7 @@ import (
 
 // CurrentLedgerVersion is the newest schema version this code understands.
 // Version 1 is baseSchema itself; later versions append a Migration below.
-const CurrentLedgerVersion = 15
+const CurrentLedgerVersion = 17
 
 // Migration is one versioned schema step. Up must be idempotent so a
 // half-applied migration re-runs cleanly.
@@ -103,6 +103,47 @@ CREATE TABLE IF NOT EXISTS recv_binds (
 		Version: 15,
 		Note:    "branch conditions on calls: loose_ends.cond (empty until reindex)",
 		Up:      `ALTER TABLE loose_ends ADD COLUMN cond TEXT NOT NULL DEFAULT ''`,
+	},
+	{
+		Version: 16,
+		Note:    "transport flow hints: endpoints table (empty until reindex)",
+		Up: `
+CREATE TABLE IF NOT EXISTS transport_endpoints (
+    id INTEGER PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT '',
+    transport TEXT NOT NULL DEFAULT 'http',
+    method TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    operation TEXT NOT NULL DEFAULT '',
+    framework TEXT NOT NULL DEFAULT '',
+    site_start INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tendpoints_method_path ON transport_endpoints(method, path);
+CREATE INDEX IF NOT EXISTS idx_tendpoints_operation ON transport_endpoints(operation);
+CREATE INDEX IF NOT EXISTS idx_tendpoints_file ON transport_endpoints(file_path);
+`,
+	},
+	{
+		Version: 17,
+		Note:    "transport flow hints: calls table (empty until reindex)",
+		Up: `
+CREATE TABLE IF NOT EXISTS transport_calls (
+    id INTEGER PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT '',
+    transport TEXT NOT NULL DEFAULT 'http',
+    method TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    operation TEXT NOT NULL DEFAULT '',
+    lib TEXT NOT NULL DEFAULT '',
+    site_start INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tcalls_method ON transport_calls(method);
+CREATE INDEX IF NOT EXISTS idx_tcalls_operation ON transport_calls(operation);
+CREATE INDEX IF NOT EXISTS idx_tcalls_file ON transport_calls(file_path);
+CREATE INDEX IF NOT EXISTS idx_tcalls_owner ON transport_calls(owner);
+`,
 	},
 }
 
