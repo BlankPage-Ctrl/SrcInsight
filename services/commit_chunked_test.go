@@ -6,8 +6,59 @@ import (
 	"sort"
 	"testing"
 
+	"srcinsight/internal/model"
 	"srcinsight/internal/storage/cold"
 )
+
+func makeBundles(files, perFile int) []cold.OriginBundle {
+	out := make([]cold.OriginBundle, files)
+	for i := range out {
+		out[i].Origin.Path = fmt.Sprintf("f%d.ts", i)
+		for j := range perFile {
+			out[i].Entries = append(out[i].Entries, cold.EntryRow{
+				ID:   model.EntryID(fmt.Sprintf("f%d.ts#e%d", i, j)),
+				Kind: "function",
+				Name: fmt.Sprintf("e%d", j),
+			})
+		}
+	}
+	return out
+}
+
+func TestUseBulkRecipe(t *testing.T) {
+	ctx := context.Background()
+	p, _ := testPipeline(t, map[string]string{"src/auth.ts": tsSrc})
+	defer p.Close()
+	if _, err := p.FullScan(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if p.useBulkRecipe(ctx, nil) {
+		t.Fatal("empty batch should use small path")
+	}
+	if !p.useBulkRecipe(ctx, makeBundles(200, 1)) {
+		t.Fatal("huge batch should use bulk path")
+	}
+	if p.useBulkRecipe(ctx, makeBundles(1, 1)) {
+		t.Fatal("tiny batch in seeded index should use small path")
+	}
+	entries, _, err := p.Vault().Counts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries == 0 {
+		t.Fatal("seeded index should hold entries")
+	}
+	if !p.useBulkRecipe(ctx, makeBundles(1, entries)) {
+		t.Fatal("batch rivalling the index should use bulk path")
+	}
+	t.Setenv("SRCINSIGHT_BULK_THRESHOLD", "20")
+	if p.useBulkRecipe(ctx, makeBundles(19, 100)) {
+		t.Fatal("env override should keep file-count behavior")
+	}
+	if !p.useBulkRecipe(ctx, makeBundles(20, 1)) {
+		t.Fatal("env override should keep file-count behavior")
+	}
+}
 
 func TestComputeBudgetFlushIsDynamic(t *testing.T) {
 	small := computeResolveBudget(1200, 10, 8)

@@ -3,13 +3,41 @@ package services
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 
 	"srcinsight/internal/storage/cold"
 )
 
-// bulkCommitThreshold selects the bulk recipe; smaller runs keep per-file commits.
-const bulkCommitThreshold = 20
+// Bulk recipe tuning from calibration: the bulk window rebuilds secondary
+// indexes over the whole DB, so it only pays off when the batch is a large
+// share of the index. Huge batches always go bulk to keep transactions grouped.
+const (
+	bulkBatchFiles = 200
+	bulkFraction   = 0.25
+)
+
+// useBulkRecipe picks the bulk recipe for bundles. An explicit
+// SRCINSIGHT_BULK_THRESHOLD keeps the old file-count behavior.
+func (p *Pipeline) useBulkRecipe(ctx context.Context, bundles []OriginBundleAlias) bool {
+	if raw := strings.TrimSpace(os.Getenv("SRCINSIGHT_BULK_THRESHOLD")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return len(bundles) >= n
+		}
+	}
+	if len(bundles) >= bulkBatchFiles {
+		return true
+	}
+	batch := totalEntries(bundles)
+	if batch == 0 {
+		return false
+	}
+	existing, _, err := p.vault.Counts(ctx)
+	if err != nil {
+		return true
+	}
+	return float64(batch)/float64(existing+batch) >= bulkFraction
+}
 
 // commitBulk writes bundles with the bulk recipe and restores pragmas on failure.
 func (p *Pipeline) commitBulk(ctx context.Context, bundles []OriginBundleAlias, fresh bool) error {

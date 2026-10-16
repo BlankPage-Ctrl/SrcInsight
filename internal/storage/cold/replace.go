@@ -44,15 +44,17 @@ func (v *Vault) ReplaceOrigin(ctx context.Context, b OriginBundle) error {
 		}
 		// Batched inserts keep single-file replaces to one Exec per 50 rows.
 		bs := []OriginBundle{b}
-		if err := v.insertEntriesBatchTx(ctx, tx, bs); err != nil {
+		w := newBulkWriter(tx)
+		defer w.close()
+		if err := v.insertEntriesBatchTx(ctx, w, bs); err != nil {
 			return err
 		}
 		b.Origin.EntryCount = bs[0].Origin.EntryCount
 		b.Origin.CatalogedAt = bs[0].Origin.CatalogedAt
-		if err := v.insertLinksBatchTx(ctx, tx, bs); err != nil {
+		if err := v.insertLinksBatchTx(ctx, w, bs); err != nil {
 			return err
 		}
-		if err := v.insertRestBatchTx(ctx, tx, bs); err != nil {
+		if err := v.insertRestBatchTx(ctx, w, bs); err != nil {
 			return err
 		}
 		if err := v.reattachIncoming(ctx, tx, b.Origin.Path, incoming); err != nil {
@@ -226,6 +228,7 @@ func (v *Vault) ExistingIDs(ctx context.Context, q querier, ids []model.EntryID)
 
 func (v *Vault) existingIDs(ctx context.Context, q querier, ids []model.EntryID) (map[model.EntryID]bool, error) {
 	present := make(map[model.EntryID]bool, len(ids))
+	// Short IN lists stay fast; long ones degrade superlinearly.
 	const chunk = 500
 	for i := 0; i < len(ids); i += chunk {
 		end := i + chunk
@@ -233,7 +236,13 @@ func (v *Vault) existingIDs(ctx context.Context, q querier, ids []model.EntryID)
 			end = len(ids)
 		}
 		n := end - i
-		placeholders := placeholdersCache[n]
+		var placeholders string
+		if n <= len(placeholdersCache)-1 && placeholdersCache[n] != "" {
+			placeholders = placeholdersCache[n]
+		} else {
+			s := strings.Repeat("?,", n)
+			placeholders = s[:len(s)-1]
+		}
 		args := make([]any, 0, n)
 		for _, id := range ids[i:end] {
 			args = append(args, string(id))

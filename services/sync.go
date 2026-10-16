@@ -167,7 +167,7 @@ func (p *Pipeline) syncLocked(ctx context.Context, hints []string) (SyncResult, 
 		syncBundles = append(syncBundles, shared.FaultBundle(df, model.Language(""), "", []string{"file too large"}))
 	}
 	syncBundles = append(syncBundles, faults...)
-	if len(syncBundles) >= bulkCommitThreshold {
+	if p.useBulkRecipe(ctx, syncBundles) {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}

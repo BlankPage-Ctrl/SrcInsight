@@ -334,10 +334,17 @@ func (p *Pipeline) flushChunkedFresh(ctx context.Context, bundles []OriginBundle
 		}
 		return err
 	}
+	// Endpoint checks already ran in Go and orphans are filtered at insert,
+	// so per-row FK probes are redundant here. Replace paths keep FKs on
+	// because clearOrigin relies on cascade deletes.
+	if err := p.vault.DrainPragma(`PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
 	commitErr := p.vault.InsertOriginsBatch(ctx, bundles)
 	if valve != nil {
 		_ = valve.FoldNow()
 	}
+	_ = p.vault.DrainPragma(`PRAGMA foreign_keys = ON`)
 	restoreErr := p.vault.SetBulkPragmas(false)
 	var endParseErr error
 	if useParseDefer {

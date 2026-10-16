@@ -107,7 +107,7 @@ func (p *Pipeline) fullScanLocked(ctx context.Context, force bool) (SyncResult, 
 	// Large runs use the bulk recipe; small runs keep per-file commits.
 	all := append(append([]cold.OriginBundle{}, bundles...), append(preFaults, faults...)...)
 	fresh := len(tracked) == 0 && len(all) > 0
-	if fresh || len(all) >= bulkCommitThreshold {
+	if fresh || p.useBulkRecipe(ctx, all) {
 		if err := p.commitBulk(ctx, all, fresh); err != nil {
 			return res, err
 		}

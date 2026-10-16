@@ -5,18 +5,45 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
+
+	"srcinsight/internal/model"
 )
 
-// Multi-row chunk sizes: rows x cols must stay under the SQLite 999-variable
-// limit per statement.
-const (
-	bulkEntryChunk = 50  // 50 x 13 cols = 650 vars
-	bulkLinkChunk  = 200 // 200 x 3 cols = 600 vars
-	bulkLooseChunk = 150 // 150 x 6 cols = 900 vars
-)
+// Multi-row chunk sizes derive from the variable budget in bulk_chunks.go:
+// rows x cols must fit the driver limit, probed down on error.
 
-// bulkImportChunkSafe covers 5 cols: 150 x 5 = 750 vars.
-const bulkImportChunkSafe = 150
+// bulkWriter carries one transaction plus its prepared multi-row statements.
+// Statements key on full query text, so equal-length chunks reuse them
+// instead of preparing on every Exec.
+type bulkWriter struct {
+	tx    *sql.Tx
+	stmts map[string]*sql.Stmt
+}
+
+func newBulkWriter(tx *sql.Tx) *bulkWriter {
+	return &bulkWriter{tx: tx, stmts: make(map[string]*sql.Stmt)}
+}
+
+func (w *bulkWriter) exec(ctx context.Context, query string, args ...any) error {
+	st, ok := w.stmts[query]
+	if !ok {
+		var err error
+		st, err = w.tx.PrepareContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		w.stmts[query] = st
+	}
+	_, err := st.ExecContext(ctx, args...)
+	return err
+}
+
+func (w *bulkWriter) close() {
+	for _, st := range w.stmts {
+		_ = st.Close()
+	}
+}
 
 // ReplaceOriginsBatch writes bundles in one transaction with ReplaceOrigin
 // semantics. Pair with the bulk-load window on the fresh-index path.
@@ -27,9 +54,13 @@ func (v *Vault) ReplaceOriginsBatch(ctx context.Context, bundles []OriginBundle)
 	if len(bundles) == 1 {
 		return v.ReplaceOrigin(ctx, bundles[0])
 	}
-	return v.Transact(ctx, func(tx *sql.Tx) error {
-		return v.replaceBundlesTx(ctx, tx, bundles, nil)
+	err := v.Transact(ctx, func(tx *sql.Tx) error {
+		w := newBulkWriter(tx)
+		defer w.close()
+		return v.replaceBundlesTx(ctx, w, bundles, nil)
 	})
+	v.wtDump("replace")
+	return err
 }
 
 // InsertOriginsBatch writes a fresh index without replace semantics.
@@ -46,13 +77,15 @@ func (v *Vault) InsertOriginsBatch(ctx context.Context, bundles []OriginBundle) 
 		}
 		chunk := bundles[i:end]
 		if err := v.Transact(ctx, func(tx *sql.Tx) error {
-			if err := v.insertEntriesBatchTx(ctx, tx, chunk); err != nil {
+			w := newBulkWriter(tx)
+			defer w.close()
+			if err := v.insertEntriesBatchTx(ctx, w, chunk); err != nil {
 				return err
 			}
-			if err := v.insertRestBatchTx(ctx, tx, chunk); err != nil {
+			if err := v.insertRestBatchTx(ctx, w, chunk); err != nil {
 				return err
 			}
-			return v.upsertOriginsBatchTx(ctx, tx, chunk)
+			return v.upsertOriginsBatchTx(ctx, w, chunk)
 		}); err != nil {
 			return err
 		}
@@ -61,14 +94,19 @@ func (v *Vault) InsertOriginsBatch(ctx context.Context, bundles []OriginBundle) 
 		}
 	}
 	// Links last: all entry IDs are now visible for the existence check.
-	return v.Transact(ctx, func(tx *sql.Tx) error {
-		return v.insertLinksBatchTx(ctx, tx, bundles)
+	err := v.Transact(ctx, func(tx *sql.Tx) error {
+		w := newBulkWriter(tx)
+		defer w.close()
+		return v.insertLinksBatchTx(ctx, w, bundles)
 	})
+	v.wtDump("insert")
+	return err
 }
 
 // replaceBundlesTx runs the batch body inside tx. Snapshots come from
 // preSnapshot when non-nil, else they are taken before the first delete.
-func (v *Vault) replaceBundlesTx(ctx context.Context, tx *sql.Tx, bundles []OriginBundle, preSnapshot map[string][]incomingLink) error {
+func (v *Vault) replaceBundlesTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle, preSnapshot map[string][]incomingLink) error {
+	tx := w.tx
 	// Snapshot incoming links before any delete.
 	snaps := preSnapshot
 	if snaps == nil {
@@ -87,13 +125,13 @@ func (v *Vault) replaceBundlesTx(ctx context.Context, tx *sql.Tx, bundles []Orig
 			return err
 		}
 	}
-	if err := v.insertEntriesBatchTx(ctx, tx, bundles); err != nil {
+	if err := v.insertEntriesBatchTx(ctx, w, bundles); err != nil {
 		return err
 	}
-	if err := v.insertLinksBatchTx(ctx, tx, bundles); err != nil {
+	if err := v.insertLinksBatchTx(ctx, w, bundles); err != nil {
 		return err
 	}
-	if err := v.insertRestBatchTx(ctx, tx, bundles); err != nil {
+	if err := v.insertRestBatchTx(ctx, w, bundles); err != nil {
 		return err
 	}
 	for _, b := range bundles {
@@ -101,7 +139,7 @@ func (v *Vault) replaceBundlesTx(ctx context.Context, tx *sql.Tx, bundles []Orig
 			return err
 		}
 	}
-	if err := v.upsertOriginsBatchTx(ctx, tx, bundles); err != nil {
+	if err := v.upsertOriginsBatchTx(ctx, w, bundles); err != nil {
 		return err
 	}
 	return nil
@@ -121,7 +159,7 @@ func (v *Vault) reattachIncomingTx(ctx context.Context, tx *sql.Tx, path string,
 
 // insertEntriesBatchTx writes all bundles' entries as chunked multi-row
 // INSERT OR REPLACE statements.
-func (v *Vault) insertEntriesBatchTx(ctx context.Context, tx *sql.Tx, bundles []OriginBundle) error {
+func (v *Vault) insertEntriesBatchTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle) error {
 	total := 0
 	for _, b := range bundles {
 		total += len(b.Entries)
@@ -135,12 +173,12 @@ func (v *Vault) insertEntriesBatchTx(ctx context.Context, tx *sql.Tx, bundles []
 		}
 	}
 	const cols = 15
-	for i := 0; i < len(rows); i += bulkEntryChunk {
-		end := i + bulkEntryChunk
-		if end > len(rows) {
-			end = len(rows)
-		}
+	var tb, te time.Duration
+	nc := 0
+	for i := 0; i < len(rows); {
+		end := min(i+chunkRows(cols), len(rows))
 		chunk := rows[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*64)
 		sb.WriteString(`INSERT OR REPLACE INTO entries (id, kind, name, qualified_name, file_path, dialect, start_line, end_line, signature, doc, test_title, tags, vessel_kind, vessel_name, vessel_id) VALUES `)
@@ -156,10 +194,19 @@ func (v *Vault) insertEntriesBatchTx(ctx context.Context, tx *sql.Tx, bundles []
 				string(r.VesselKind), r.VesselName, string(r.VesselID),
 			)
 		}
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tb += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch entries [%d:%d]: %w", i, end, err)
 		}
+		te += time.Since(t0)
+		nc++
+		i = end
 	}
+	v.wtAdd("entries", tb, te, nc)
 	// Stamp per-bundle counts for the origin records below.
 	for i := range bundles {
 		n := 0
@@ -176,7 +223,7 @@ func (v *Vault) insertEntriesBatchTx(ctx context.Context, tx *sql.Tx, bundles []
 
 // insertLinksBatchTx writes links whose endpoints both exist, checked once
 // for all bundles. Dangling endpoints would violate the foreign keys.
-func (v *Vault) insertLinksBatchTx(ctx context.Context, tx *sql.Tx, bundles []OriginBundle) error {
+func (v *Vault) insertLinksBatchTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle) error {
 	totalLinks := 0
 	for _, b := range bundles {
 		totalLinks += len(b.Links)
@@ -192,7 +239,10 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, tx *sql.Tx, bundles []Or
 	if len(all) == 0 {
 		return nil
 	}
-	present, err := v.existingIDs(ctx, tx, linkEndpoints(all))
+	t0 := time.Now()
+	present, err := v.existingIDs(ctx, w.tx, linkEndpoints(all))
+	tCheck := time.Since(t0)
+	v.wtAdd("links.check", 0, tCheck, 1)
 	if err != nil {
 		return err
 	}
@@ -203,12 +253,12 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, tx *sql.Tx, bundles []Or
 		}
 	}
 	const cols = 6
-	for i := 0; i < len(keep); i += bulkLinkChunk {
-		end := i + bulkLinkChunk
-		if end > len(keep) {
-			end = len(keep)
-		}
+	var tb, te time.Duration
+	nc := 0
+	for i := 0; i < len(keep); {
+		end := min(i+chunkRows(cols), len(keep))
 		chunk := keep[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*16)
 		sb.WriteString(`INSERT OR IGNORE INTO links (origin, target, kind, site_start, site_end, cond) VALUES `)
@@ -220,15 +270,24 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, tx *sql.Tx, bundles []Or
 			sb.WriteString(`(?,?,?,?,?,?)`)
 			args = append(args, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.Cond)
 		}
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tb += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch links [%d:%d]: %w", i, end, err)
 		}
+		te += time.Since(t0)
+		nc++
+		i = end
 	}
+	v.wtAdd("links", tb, te, nc)
 	return nil
 }
 
 // insertRestBatchTx writes all imports + loose ends + recv binds multi-row.
-func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []OriginBundle) error {
+func (v *Vault) insertRestBatchTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle) error {
 	totalImps, totalLoose, totalBinds := 0, 0, 0
 	for _, b := range bundles {
 		totalImps += len(b.Imports)
@@ -238,10 +297,24 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []Ori
 	imps := make([]ImportRow, 0, totalImps)
 	loose := make([]LooseEndRow, 0, totalLoose)
 	binds := make([]RecvBindRow, 0, totalBinds)
+	// Loose ends must resolve to a written entry; From always lives in the
+	// same bundle, so filter against this batch's valid entry IDs. Without
+	// this, a skipped entry would leave a dangling loose end behind.
+	owners := make(map[model.EntryID]struct{}, totalImps)
+	for _, b := range bundles {
+		for _, r := range b.Entries {
+			if r.Valid() {
+				owners[r.ID] = struct{}{}
+			}
+		}
+	}
 	for _, b := range bundles {
 		imps = append(imps, b.Imports...)
 		for _, r := range b.LooseEnds {
 			if r.From == "" || r.Name == "" {
+				continue
+			}
+			if _, ok := owners[r.From]; !ok {
 				continue
 			}
 			loose = append(loose, r)
@@ -252,12 +325,12 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []Ori
 			}
 		}
 	}
-	for i := 0; i < len(imps); i += bulkImportChunkSafe {
-		end := i + bulkImportChunkSafe
-		if end > len(imps) {
-			end = len(imps)
-		}
+	var tbImp, teImp, tbLoose, teLoose, tbBind, teBind time.Duration
+	var ncImp, ncLoose, ncBind int
+	for i := 0; i < len(imps); {
+		end := min(i+chunkRows(5), len(imps))
 		chunk := imps[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*48)
 		sb.WriteString(`INSERT INTO brought_in (file_path, local_name, source, kind, alias) VALUES `)
@@ -269,16 +342,23 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []Ori
 			sb.WriteString(`(?,?,?,?,?)`)
 			args = append(args, r.FilePath, r.LocalName, r.Source, r.Kind, r.Alias)
 		}
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tbImp += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch imports [%d:%d]: %w", i, end, err)
 		}
+		teImp += time.Since(t0)
+		ncImp++
+		i = end
 	}
-	for i := 0; i < len(loose); i += bulkLooseChunk {
-		end := i + bulkLooseChunk
-		if end > len(loose) {
-			end = len(loose)
-		}
+	v.wtAdd("rest.imports", tbImp, teImp, ncImp)
+	for i := 0; i < len(loose); {
+		end := min(i+chunkRows(9), len(loose))
 		chunk := loose[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*64)
 		sb.WriteString(`INSERT INTO loose_ends (from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond) VALUES `)
@@ -290,17 +370,23 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []Ori
 			sb.WriteString(`(?,?,?,?,?,?,?,?,?)`)
 			args = append(args, string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.Cond)
 		}
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tbLoose += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch loose ends [%d:%d]: %w", i, end, err)
 		}
+		teLoose += time.Since(t0)
+		ncLoose++
+		i = end
 	}
-	// Recv binds: 5 cols x 150 = 750 vars per chunk, same budget as imports.
-	for i := 0; i < len(binds); i += bulkImportChunkSafe {
-		end := i + bulkImportChunkSafe
-		if end > len(binds) {
-			end = len(binds)
-		}
+	v.wtAdd("rest.loose", tbLoose, teLoose, ncLoose)
+	for i := 0; i < len(binds); {
+		end := min(i+chunkRows(5), len(binds))
 		chunk := binds[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*48)
 		sb.WriteString(`INSERT INTO recv_binds (file_path, owner, recv, type_name, via_call) VALUES `)
@@ -312,25 +398,34 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, tx *sql.Tx, bundles []Ori
 			sb.WriteString(`(?,?,?,?,?)`)
 			args = append(args, r.FilePath, r.Owner, r.Recv, r.Type, r.ViaCall)
 		}
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tbBind += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch recv binds [%d:%d]: %w", i, end, err)
 		}
+		teBind += time.Since(t0)
+		ncBind++
+		i = end
 	}
+	v.wtAdd("rest.binds", tbBind, teBind, ncBind)
 	return nil
 }
 
 // upsertOriginsBatchTx records origin rows multi-row (chunked: 100 x 8).
-func (v *Vault) upsertOriginsBatchTx(ctx context.Context, tx *sql.Tx, bundles []OriginBundle) error {
+func (v *Vault) upsertOriginsBatchTx(ctx context.Context, w *bulkWriter, bundles []OriginBundle) error {
 	if len(bundles) == 0 {
 		return nil
 	}
-	const chunk = 100
-	for i := 0; i < len(bundles); i += chunk {
-		end := i + chunk
-		if end > len(bundles) {
-			end = len(bundles)
-		}
+	const cols = 8
+	var tb, te time.Duration
+	nc := 0
+	for i := 0; i < len(bundles); {
+		end := min(i+chunkRows(cols), len(bundles))
 		part := bundles[i:end]
+		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(part)*32)
 		sb.WriteString(`INSERT INTO origins (path, fingerprint, dialect, bytes, altered_at, cataloged_at, entry_count, faults) VALUES `)
@@ -346,10 +441,19 @@ func (v *Vault) upsertOriginsBatchTx(ctx context.Context, tx *sql.Tx, bundles []
 			)
 		}
 		sb.WriteString(` ON CONFLICT(path) DO UPDATE SET fingerprint=excluded.fingerprint, dialect=excluded.dialect, bytes=excluded.bytes, altered_at=excluded.altered_at, cataloged_at=excluded.cataloged_at, entry_count=excluded.entry_count, faults=excluded.faults`)
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		tb += time.Since(t0)
+		t0 = time.Now()
+		if err := w.exec(ctx, sb.String(), args...); err != nil {
+			if isVarLimitError(err) && shrinkVarBudget() {
+				continue
+			}
 			return fmt.Errorf("cold: batch origins [%d:%d]: %w", i, end, err)
 		}
+		te += time.Since(t0)
+		nc++
+		i = end
 	}
+	v.wtAdd("origins", tb, te, nc)
 	return nil
 }
 
@@ -397,24 +501,31 @@ END`,
 // BeginBulkLoad drops per-row FTS triggers. Pair with EndBulkLoad; a crash
 // inside the window heals on the next open.
 func (v *Vault) BeginBulkLoad() error {
+	t0 := time.Now()
 	for _, t := range ftsTriggerNames {
 		if _, err := v.db.Exec(`DROP TRIGGER IF EXISTS ` + t); err != nil {
 			return fmt.Errorf("cold: begin bulk drop %s: %w", t, err)
 		}
 	}
+	v.wtAdd("bulk.drop_fts", 0, time.Since(t0), len(ftsTriggerNames))
 	return nil
 }
 
 // EndBulkLoad rebuilds the FTS index in one pass, then recreates triggers.
 func (v *Vault) EndBulkLoad() error {
+	t0 := time.Now()
 	if _, err := v.db.Exec(`INSERT INTO entries_fts(entries_fts) VALUES('rebuild')`); err != nil {
 		return fmt.Errorf("cold: end bulk rebuild fts: %w", err)
 	}
+	v.wtAdd("bulk.fts_rebuild", 0, time.Since(t0), 1)
+	t0 = time.Now()
 	for _, ddl := range ftsTriggerDDLs {
 		if _, err := v.db.Exec(ddl); err != nil {
 			return fmt.Errorf("cold: end bulk recreate trigger: %w", err)
 		}
 	}
+	v.wtAdd("bulk.fts_triggers", 0, time.Since(t0), len(ftsTriggerDDLs))
+	v.wtDump("window")
 	return nil
 }
 
@@ -436,21 +547,36 @@ func (v *Vault) healBulkLoad() error {
 // SetBulkPragmas enables the bulk-write recipe (safe only for a fresh index
 // that a crash just re-runs). Pass false to restore NORMAL/1000.
 func (v *Vault) SetBulkPragmas(on bool) error {
+	t0 := time.Now()
 	if on {
+		if err := v.db.QueryRow(`PRAGMA cache_spill`).Scan(&v.savedCacheSpill); err == nil {
+			v.hasCacheSpill = true
+		}
+		if err := v.drain(`PRAGMA cache_spill = OFF`); err != nil {
+			return fmt.Errorf("cold: bulk cache spill off: %w", err)
+		}
 		if err := v.drain(`PRAGMA wal_autocheckpoint = 0`); err != nil {
 			return fmt.Errorf("cold: bulk autocheckpoint off: %w", err)
 		}
 		if err := v.drain(`PRAGMA synchronous = OFF`); err != nil {
 			return fmt.Errorf("cold: bulk synchronous off: %w", err)
 		}
+		v.wtAdd("bulk.pragmas_on", 0, time.Since(t0), 1)
 		return nil
 	}
 	if err := v.drain(`PRAGMA synchronous = NORMAL`); err != nil {
 		return fmt.Errorf("cold: bulk synchronous restore: %w", err)
 	}
+	if v.hasCacheSpill {
+		if err := v.drain(fmt.Sprintf(`PRAGMA cache_spill = %d`, v.savedCacheSpill)); err != nil {
+			return fmt.Errorf("cold: bulk cache spill restore: %w", err)
+		}
+		v.hasCacheSpill = false
+	}
 	if err := v.drain(`PRAGMA wal_autocheckpoint = 1000`); err != nil {
 		return fmt.Errorf("cold: bulk autocheckpoint restore: %w", err)
 	}
+	v.wtAdd("bulk.pragmas_off", 0, time.Since(t0), 1)
 	return nil
 }
 
@@ -495,17 +621,20 @@ var bulkIndexDDLs = map[string]string{
 
 // BeginBulkParseLoad drops parse-time secondary indexes for bulk (fresh init).
 func (v *Vault) BeginBulkParseLoad() error {
+	t0 := time.Now()
 	for _, idx := range bulkParseIndexes {
 		if _, err := v.db.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
 			return fmt.Errorf("cold: begin bulk drop %s: %w", idx, err)
 		}
 	}
+	v.wtAdd("bulk.drop_idx", 0, time.Since(t0), len(bulkParseIndexes))
 	// Also drop edge indexes (keep UNIQUE identity).
 	return v.BeginBulkEdgeLoad()
 }
 
 // EndBulkParseLoad recreates parse indexes.
 func (v *Vault) EndBulkParseLoad() error {
+	t0 := time.Now()
 	for _, idx := range bulkParseIndexes {
 		if ddl, ok := bulkIndexDDLs[idx]; ok {
 			if _, err := v.db.Exec(ddl); err != nil {
@@ -513,21 +642,25 @@ func (v *Vault) EndBulkParseLoad() error {
 			}
 		}
 	}
+	v.wtAdd("bulk.create_idx", 0, time.Since(t0), len(bulkParseIndexes))
 	return v.EndBulkEdgeLoad()
 }
 
 // BeginBulkEdgeLoad drops edge secondary indexes during resolution bulk.
 func (v *Vault) BeginBulkEdgeLoad() error {
+	t0 := time.Now()
 	for _, idx := range bulkEdgeIndexes {
 		if _, err := v.db.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
 			return fmt.Errorf("cold: begin bulk edge drop %s: %w", idx, err)
 		}
 	}
+	v.wtAdd("bulk.drop_edgeidx", 0, time.Since(t0), len(bulkEdgeIndexes))
 	return nil
 }
 
 // EndBulkEdgeLoad recreates edge indexes.
 func (v *Vault) EndBulkEdgeLoad() error {
+	t0 := time.Now()
 	for _, idx := range bulkEdgeIndexes {
 		if ddl, ok := bulkIndexDDLs[idx]; ok {
 			if _, err := v.db.Exec(ddl); err != nil {
@@ -535,6 +668,7 @@ func (v *Vault) EndBulkEdgeLoad() error {
 			}
 		}
 	}
+	v.wtAdd("bulk.create_edgeidx", 0, time.Since(t0), len(bulkEdgeIndexes))
 	return nil
 }
 

@@ -98,6 +98,11 @@ type Vault struct {
 	ident fileIdent // file identity at open time; see replacedOnDisk.
 
 	stmts *statements
+
+	wt *writeTimings // write-stage breakdown; only filled when timings env is set.
+
+	savedCacheSpill int  // cache_spill value before the bulk window.
+	hasCacheSpill   bool // whether savedCacheSpill was captured.
 }
 
 // Open opens the vault at dbPath and runs pending migrations.
@@ -221,6 +226,9 @@ func (v *Vault) drain(query string, args ...any) error {
 	}
 	return rows.Err()
 }
+
+// DrainPragma runs a PRAGMA statement outside the prepared set.
+func (v *Vault) DrainPragma(query string) error { return v.drain(query) }
 
 // GetWalSizeBytes returns the WAL file size in bytes (0 if absent).
 func (v *Vault) GetWalSizeBytes() int64 {
