@@ -28,7 +28,7 @@ func (v *Vault) CatalogLinks(ctx context.Context, rows []LinkRow) (int, error) {
 			if !present[r.Origin] || !present[r.Target] {
 				continue
 			}
-			if _, err := stmt.ExecContext(ctx, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.Cond); err != nil {
+			if _, err := stmt.ExecContext(ctx, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond); err != nil {
 				return fmt.Errorf("cold: catalog link %s->%s: %w", r.Origin, r.Target, err)
 			}
 			written++
@@ -55,7 +55,7 @@ func (v *Vault) RecatalogLinks(ctx context.Context, rows []LinkRow) error {
 			if !r.Valid() {
 				continue
 			}
-			if _, err := stmt.ExecContext(ctx, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.Cond); err != nil {
+			if _, err := stmt.ExecContext(ctx, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond); err != nil {
 				return fmt.Errorf("cold: recatalog link %s->%s: %w", r.Origin, r.Target, err)
 			}
 		}
@@ -75,7 +75,7 @@ func (v *Vault) FetchAllLinks(ctx context.Context) ([]LinkRow, error) {
 	var out []LinkRow
 	for rows.Next() {
 		var r LinkRow
-		if err := rows.Scan(&r.Origin, &r.Target, &r.Kind, &r.SiteStart, &r.SiteEnd, &r.Cond); err != nil {
+		if err := rows.Scan(&r.Origin, &r.Target, &r.Kind, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch all links: %w", err)
 		}
 		out = append(out, r)
@@ -106,11 +106,11 @@ func (v *Vault) FetchNeighbors(ctx context.Context, id model.EntryID, kinds []st
 	placeholders = placeholders[:len(placeholders)-1]
 	var query string
 	if reverse {
-		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.site_start, l.site_end, l.cond FROM links l
+		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.site_start, l.site_end, l.site_start_col, l.site_end_col, l.cond FROM links l
 			JOIN entries t ON t.id = l.origin
 			WHERE l.target = ? AND l.kind IN (` + placeholders + `) ORDER BY t.id`
 	} else {
-		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.site_start, l.site_end, l.cond FROM links l
+		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.site_start, l.site_end, l.site_start_col, l.site_end_col, l.cond FROM links l
 			JOIN entries t ON t.id = l.target
 			WHERE l.origin = ? AND l.kind IN (` + placeholders + `) ORDER BY t.id`
 	}
@@ -127,7 +127,7 @@ func (v *Vault) FetchNeighbors(ctx context.Context, id model.EntryID, kinds []st
 	var out []model.FunctionRef
 	for rows.Next() {
 		var ref model.FunctionRef
-		if err := rows.Scan(&ref.ID, &ref.Name, &ref.FilePath, &ref.LineRange.StartLine, &ref.LineRange.EndLine, &ref.SiteRange.StartLine, &ref.SiteRange.EndLine, &ref.Cond); err != nil {
+		if err := rows.Scan(&ref.ID, &ref.Name, &ref.FilePath, &ref.LineRange.StartLine, &ref.LineRange.EndLine, &ref.SiteRange.StartLine, &ref.SiteRange.EndLine, &ref.SiteRange.StartCol, &ref.SiteRange.EndCol, &ref.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch neighbors %s: %w", id, err)
 		}
 		ref.Scope = model.InternalScope(ref.FilePath)
@@ -155,11 +155,11 @@ func (v *Vault) FetchNeighborEdges(ctx context.Context, id model.EntryID, kinds 
 	placeholders = placeholders[:len(placeholders)-1]
 	var query string
 	if reverse {
-		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.kind, l.site_start, l.site_end, l.cond FROM links l
+		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.kind, l.site_start, l.site_end, l.site_start_col, l.site_end_col, l.cond FROM links l
 			JOIN entries t ON t.id = l.origin
 			WHERE l.target = ? AND l.kind IN (` + placeholders + `) ORDER BY t.id, l.kind`
 	} else {
-		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.kind, l.site_start, l.site_end, l.cond FROM links l
+		query = `SELECT t.id, t.name, t.file_path, t.start_line, t.end_line, l.kind, l.site_start, l.site_end, l.site_start_col, l.site_end_col, l.cond FROM links l
 			JOIN entries t ON t.id = l.target
 			WHERE l.origin = ? AND l.kind IN (` + placeholders + `) ORDER BY t.id, l.kind`
 	}
@@ -176,7 +176,7 @@ func (v *Vault) FetchNeighborEdges(ctx context.Context, id model.EntryID, kinds 
 	var out []NeighborEdge
 	for rows.Next() {
 		var ne NeighborEdge
-		if err := rows.Scan(&ne.Ref.ID, &ne.Ref.Name, &ne.Ref.FilePath, &ne.Ref.LineRange.StartLine, &ne.Ref.LineRange.EndLine, &ne.Kind, &ne.Ref.SiteRange.StartLine, &ne.Ref.SiteRange.EndLine, &ne.Ref.Cond); err != nil {
+		if err := rows.Scan(&ne.Ref.ID, &ne.Ref.Name, &ne.Ref.FilePath, &ne.Ref.LineRange.StartLine, &ne.Ref.LineRange.EndLine, &ne.Kind, &ne.Ref.SiteRange.StartLine, &ne.Ref.SiteRange.EndLine, &ne.Ref.SiteRange.StartCol, &ne.Ref.SiteRange.EndCol, &ne.Ref.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch neighbor edges %s: %w", id, err)
 		}
 		ne.Ref.Scope = model.InternalScope(ne.Ref.FilePath)

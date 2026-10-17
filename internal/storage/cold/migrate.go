@@ -8,7 +8,7 @@ import (
 
 // CurrentLedgerVersion is the newest schema version this code understands.
 // Version 1 is baseSchema itself; later versions append a Migration below.
-const CurrentLedgerVersion = 18
+const CurrentLedgerVersion = 23
 
 // Migration is one versioned schema step. Up must be idempotent so a
 // half-applied migration re-runs cleanly.
@@ -149,6 +149,35 @@ CREATE INDEX IF NOT EXISTS idx_tcalls_owner ON transport_calls(owner);
 		Version: 18,
 		Note:    "transport endpoints by owner for trace transport hops",
 		Up:      `CREATE INDEX IF NOT EXISTS idx_tendpoints_owner ON transport_endpoints(owner)`,
+	},
+	{
+		Version: 19,
+		Note:    "call-site identifier columns: links.site_start_col (0 until reindex)",
+		Up:      `ALTER TABLE links ADD COLUMN site_start_col INTEGER NOT NULL DEFAULT 0`,
+	},
+	{
+		Version: 20,
+		Note:    "call-site identifier columns: links.site_end_col",
+		Up:      `ALTER TABLE links ADD COLUMN site_end_col INTEGER NOT NULL DEFAULT 0`,
+	},
+	{
+		Version: 21,
+		Note:    "reference identifier columns: loose_ends.site_start_col (0 until reindex)",
+		Up:      `ALTER TABLE loose_ends ADD COLUMN site_start_col INTEGER NOT NULL DEFAULT 0`,
+	},
+	{
+		Version: 22,
+		Note:    "reference identifier columns: loose_ends.site_end_col",
+		Up:      `ALTER TABLE loose_ends ADD COLUMN site_end_col INTEGER NOT NULL DEFAULT 0`,
+	},
+	{
+		Version: 23,
+		Note:    "link identity widens to per-identifier site: add site_start_col,site_end_col",
+		Up: `
+DROP INDEX IF EXISTS idx_links_identity;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_links_identity
+  ON links(origin, target, kind, site_start, site_end, site_start_col, site_end_col);
+`,
 	},
 }
 

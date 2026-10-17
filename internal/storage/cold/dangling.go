@@ -19,7 +19,7 @@ func (v *Vault) CatalogLooseEnds(ctx context.Context, rows []LooseEndRow) error 
 				continue
 			}
 			if _, err := stmt.ExecContext(ctx,
-				string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.Cond,
+				string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond,
 			); err != nil {
 				return fmt.Errorf("cold: catalog loose end %s: %w", r.From, err)
 			}
@@ -39,7 +39,7 @@ func (v *Vault) FetchLooseEndsByOwner(ctx context.Context, owner model.EntryID) 
 	var out []LooseEndRow
 	for rows.Next() {
 		var r LooseEndRow
-		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.Cond); err != nil {
+		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch loose ends %s: %w", owner, err)
 		}
 		out = append(out, r)
@@ -58,7 +58,7 @@ func (v *Vault) FetchLooseEndsByFile(ctx context.Context, file string) ([]LooseE
 	var out []LooseEndRow
 	for rows.Next() {
 		var r LooseEndRow
-		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.Cond); err != nil {
+		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch loose ends by file %s: %w", file, err)
 		}
 		out = append(out, r)
@@ -78,7 +78,7 @@ func (v *Vault) FetchAllLooseEnds(ctx context.Context) ([]LooseEndRow, error) {
 	var out []LooseEndRow
 	for rows.Next() {
 		var r LooseEndRow
-		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.Cond); err != nil {
+		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
 			return nil, fmt.Errorf("cold: fetch all loose ends: %w", err)
 		}
 		out = append(out, r)
@@ -101,7 +101,7 @@ func (v *Vault) RecatalogLooseEnds(ctx context.Context, rows []LooseEndRow) erro
 				continue
 			}
 			if _, err := stmt.ExecContext(ctx,
-				string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.Cond,
+				string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond,
 			); err != nil {
 				return fmt.Errorf("cold: recatalog loose end %s: %w", r.From, err)
 			}

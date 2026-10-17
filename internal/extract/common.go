@@ -17,15 +17,20 @@ type ImportStmt = model.ImportStmt
 // FileExtract aliases model.FileExtract.
 type FileExtract = model.FileExtract
 
-// NodeRange converts a tree-sitter node to a 1-indexed line range.
+// NodeRange converts a tree-sitter node to a 1-indexed line and column range.
+// Columns are 1-indexed byte offsets within their line; EndCol is exclusive
+// (one past the last byte), matching tree-sitter positions.
 func NodeRange(n *sitter.Node) model.Range {
 	return model.Range{
 		StartLine: int(n.StartPosition().Row) + 1,
 		EndLine:   int(n.EndPosition().Row) + 1,
+		StartCol:  int(n.StartPosition().Column) + 1,
+		EndCol:    int(n.EndPosition().Column) + 1,
 	}
 }
 
-// CallRange maps a call-name node to its line range inside the enclosing def.
+// CallRange maps a call-name node to its line and column range inside the
+// enclosing def.
 func CallRange(n *sitter.Node) model.Range {
 	if n == nil {
 		return model.Range{}
@@ -33,17 +38,22 @@ func CallRange(n *sitter.Node) model.Range {
 	return model.Range{
 		StartLine: int(n.StartPosition().Row) + 1,
 		EndLine:   int(n.EndPosition().Row) + 1,
+		StartCol:  int(n.StartPosition().Column) + 1,
+		EndCol:    int(n.EndPosition().Column) + 1,
 	}
 }
 
 // SiteRange widens CallRange to the whole call statement via same-row ancestors.
-// Hops cap at 12; nil yields the zero range.
+// Lines span the widened statement; columns stay pinned to the identifier so a
+// site keeps an exact reference point. Hops cap at 12; nil yields the zero range.
 func SiteRange(n *sitter.Node) model.Range {
 	if n == nil {
 		return model.Range{}
 	}
 	startRow := n.StartPosition().Row
 	endRow := n.EndPosition().Row
+	startCol := int(n.StartPosition().Column) + 1
+	endCol := int(n.EndPosition().Column) + 1
 	for p, hops := n.Parent(), 0; p != nil && hops < 12; p, hops = p.Parent(), hops+1 {
 		if p.StartPosition().Row != startRow {
 			break
@@ -55,6 +65,8 @@ func SiteRange(n *sitter.Node) model.Range {
 	return model.Range{
 		StartLine: int(startRow) + 1,
 		EndLine:   int(endRow) + 1,
+		StartCol:  startCol,
+		EndCol:    endCol,
 	}
 }
 

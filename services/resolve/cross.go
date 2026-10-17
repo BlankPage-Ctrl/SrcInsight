@@ -68,7 +68,7 @@ func ResolveOutgoingCross(ctx context.Context, s Store, b *cold.OriginBundle) er
 			if isUses {
 				// Uses allows any kind.
 			}
-			lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+			lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 			if !lr.Valid() {
 				continue
 			}
@@ -143,7 +143,7 @@ func ResolveOutgoingCrossWithPending(ctx context.Context, s Store, b *cold.Origi
 			return err
 		}
 		for _, r := range rows {
-			lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+			lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 			if !lr.Valid() {
 				continue
 			}
@@ -280,7 +280,7 @@ func PromoteReverseCross(ctx context.Context, s Store, bundles []cold.OriginBund
 					continue
 				}
 				promos = append(promos, promo{
-					link: cold.LinkRow{Origin: le.From, Target: entry.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond},
+					link: cold.LinkRow{Origin: le.From, Target: entry.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond},
 					lose: le,
 				})
 			}

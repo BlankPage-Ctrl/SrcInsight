@@ -151,7 +151,7 @@ func ResolveDIBatch(
 				continue
 			}
 			for _, t := range targets {
-				lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+				lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 				if !lr.Valid() {
 					continue
 				}
@@ -276,7 +276,7 @@ func PromoteDIReverse(ctx context.Context, s resolve.Store, bundles []cold.Origi
 						}
 					}
 					promos = append(promos, promo{
-						link: cold.LinkRow{Origin: le.From, Target: m.id, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond},
+						link: cold.LinkRow{Origin: le.From, Target: m.id, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond},
 						lose: le,
 					})
 				}

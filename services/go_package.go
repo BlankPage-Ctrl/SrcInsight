@@ -121,7 +121,7 @@ func (p *Pipeline) resolveGoPackageBatch(ctx context.Context, bundles []cold.Ori
 					if !goKindOK(le.Kind, r) {
 						continue
 					}
-					lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+					lr := cold.LinkRow{Origin: le.From, Target: r.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 					if !lr.Valid() {
 						continue
 					}
@@ -197,7 +197,7 @@ func (p *Pipeline) promoteGoPackageReverse(ctx context.Context, bundles []cold.O
 					if !goKindOK(le.Kind, e) {
 						continue
 					}
-					lr := cold.LinkRow{Origin: le.From, Target: e.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+					lr := cold.LinkRow{Origin: le.From, Target: e.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 					if !lr.Valid() {
 						continue
 					}

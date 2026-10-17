@@ -45,7 +45,7 @@ func (v *Vault) AssembleSnapshot(ctx context.Context) (model.Graph, error) {
 			continue
 		}
 		ref := refOf(*to)
-		ref.SiteRange = model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd}
+		ref.SiteRange = model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd, StartCol: l.SiteStartCol, EndCol: l.SiteEndCol}
 		switch l.Kind {
 		case model.EdgeCalls:
 			from.Calls = append(from.Calls, ref)
@@ -62,7 +62,7 @@ func (v *Vault) AssembleSnapshot(ctx context.Context) (model.Graph, error) {
 		default:
 			continue
 		}
-		edges = append(edges, model.Edge{From: l.Origin, To: l.Target, Kind: l.Kind, SiteRange: model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd}})
+		edges = append(edges, model.Edge{From: l.Origin, To: l.Target, Kind: l.Kind, SiteRange: model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd, StartCol: l.SiteStartCol, EndCol: l.SiteEndCol}})
 	}
 
 	for _, l := range loose {
@@ -70,7 +70,7 @@ func (v *Vault) AssembleSnapshot(ctx context.Context) (model.Graph, error) {
 		if !ok {
 			continue
 		}
-		ref := model.FunctionRef{Name: l.Name, Scope: l.Scope, SiteRange: model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd}}
+		ref := model.FunctionRef{Name: l.Name, Scope: l.Scope, SiteRange: model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd, StartCol: l.SiteStartCol, EndCol: l.SiteEndCol}}
 		switch l.Kind {
 		case model.EdgeCalls:
 			from.Calls = append(from.Calls, ref)
@@ -103,7 +103,7 @@ func (v *Vault) AssembleSnapshot(ctx context.Context) (model.Graph, error) {
 			continue
 		}
 		cr := refOf(*from)
-		cr.SiteRange = model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd}
+		cr.SiteRange = model.Range{StartLine: l.SiteStart, EndLine: l.SiteEnd, StartCol: l.SiteStartCol, EndCol: l.SiteEndCol}
 		to.CalledBy = append(to.CalledBy, cr)
 	}
 	for i := range nodes {

@@ -142,14 +142,18 @@ func sortedRefs(refs []model.FunctionRef) []model.FunctionRef {
 }
 
 // LinkRow is one resolved directed relationship. SiteStart and SiteEnd hold
-// the call-site range (0,0 means unknown); Cond holds the branch condition.
+// the call-site line range (0,0 means unknown); SiteStartCol and SiteEndCol
+// hold the 1-indexed identifier column range inside those lines (end
+// exclusive). Cond holds the branch condition.
 type LinkRow struct {
-	Origin    model.EntryID
-	Target    model.EntryID
-	Kind      string // model.EdgeCalls / EdgeExtends / EdgeImplements
-	SiteStart int
-	SiteEnd   int
-	Cond      string
+	Origin       model.EntryID
+	Target       model.EntryID
+	Kind         string // model.EdgeCalls / EdgeExtends / EdgeImplements
+	SiteStart    int
+	SiteEnd      int
+	SiteStartCol int
+	SiteEndCol   int
+	Cond         string
 }
 
 // Valid reports whether both endpoints are present; dangling links stay
@@ -219,17 +223,20 @@ func (r RecvBindRow) Model() model.RecvBinding {
 }
 
 // LooseEndRow is one unresolved reference. Scope keeps the classification
-// so stats and display survive the round trip; Cond survives promotion.
+// so stats and display survive the round trip; SiteStartCol/SiteEndCol keep
+// the identifier column range and Cond survives promotion.
 type LooseEndRow struct {
-	From      model.EntryID
-	Name      string
-	Kind      string // calls / extends / implements
-	Scope     string
-	FilePath  string
-	Dialect   model.Language
-	SiteStart int
-	SiteEnd   int
-	Cond      string
+	From         model.EntryID
+	Name         string
+	Kind         string // calls / extends / implements
+	Scope        string
+	FilePath     string
+	Dialect      model.Language
+	SiteStart    int
+	SiteEnd      int
+	SiteStartCol int
+	SiteEndCol   int
+	Cond         string
 }
 
 // TransportEndpointRow is one server route hint. Path is already normalized

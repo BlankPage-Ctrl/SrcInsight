@@ -12,13 +12,15 @@ import (
 // incomingLink is one cross-file edge into a file being replaced. The target
 // rides as (kind, name): IDs embed source order, names re-resolve cleanly.
 type incomingLink struct {
-	origin     model.EntryID
-	kind       string
-	targetKind string
-	targetName string
-	siteStart  int
-	siteEnd    int
-	cond       string
+	origin       model.EntryID
+	kind         string
+	targetKind   string
+	targetName   string
+	siteStart    int
+	siteEnd      int
+	siteStartCol int
+	siteEndCol   int
+	cond         string
 }
 
 // placeholdersCache avoids per-chunk placeholder rebuilds.
@@ -79,7 +81,7 @@ func (v *Vault) snapshotIncoming(ctx context.Context, tx *sql.Tx, path string) (
 	var out []incomingLink
 	for rows.Next() {
 		var l incomingLink
-		if err := rows.Scan(&l.origin, &l.kind, &l.targetKind, &l.targetName, &l.siteStart, &l.siteEnd, &l.cond); err != nil {
+		if err := rows.Scan(&l.origin, &l.kind, &l.targetKind, &l.targetName, &l.siteStart, &l.siteEnd, &l.siteStartCol, &l.siteEndCol, &l.cond); err != nil {
 			return nil, fmt.Errorf("cold: snapshot incoming %s: %w", path, err)
 		}
 		out = append(out, l)
@@ -198,7 +200,7 @@ func (v *Vault) reattachIncoming(ctx context.Context, tx *sql.Tx, path string, i
 		} else if err != nil {
 			return fmt.Errorf("cold: reattach resolve %s: %w", l.targetName, err)
 		}
-		if _, err := ins.ExecContext(ctx, string(l.origin), string(targetID), l.kind, l.siteStart, l.siteEnd, l.cond); err != nil {
+		if _, err := ins.ExecContext(ctx, string(l.origin), string(targetID), l.kind, l.siteStart, l.siteEnd, l.siteStartCol, l.siteEndCol, l.cond); err != nil {
 			return fmt.Errorf("cold: reattach link %s: %w", l.origin, err)
 		}
 	}

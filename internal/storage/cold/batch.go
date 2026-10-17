@@ -252,7 +252,7 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, w *bulkWriter, bundles [
 			keep = append(keep, r)
 		}
 	}
-	const cols = 6
+	const cols = 8
 	var tb, te time.Duration
 	nc := 0
 	for i := 0; i < len(keep); {
@@ -261,14 +261,14 @@ func (v *Vault) insertLinksBatchTx(ctx context.Context, w *bulkWriter, bundles [
 		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*16)
-		sb.WriteString(`INSERT OR IGNORE INTO links (origin, target, kind, site_start, site_end, cond) VALUES `)
+		sb.WriteString(`INSERT OR IGNORE INTO links (origin, target, kind, site_start, site_end, site_start_col, site_end_col, cond) VALUES `)
 		args := make([]any, 0, len(chunk)*cols)
 		for j, r := range chunk {
 			if j > 0 {
 				sb.WriteByte(',')
 			}
-			sb.WriteString(`(?,?,?,?,?,?)`)
-			args = append(args, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.Cond)
+			sb.WriteString(`(?,?,?,?,?,?,?,?)`)
+			args = append(args, string(r.Origin), string(r.Target), r.Kind, r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond)
 		}
 		tb += time.Since(t0)
 		t0 = time.Now()
@@ -370,19 +370,19 @@ func (v *Vault) insertRestBatchTx(ctx context.Context, w *bulkWriter, bundles []
 	}
 	v.wtAdd("rest.imports", tbImp, teImp, ncImp)
 	for i := 0; i < len(loose); {
-		end := min(i+chunkRows(9), len(loose))
+		end := min(i+chunkRows(11), len(loose))
 		chunk := loose[i:end]
 		t0 := time.Now()
 		var sb strings.Builder
 		sb.Grow(128 + len(chunk)*64)
-		sb.WriteString(`INSERT INTO loose_ends (from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond) VALUES `)
-		args := make([]any, 0, len(chunk)*9)
+		sb.WriteString(`INSERT INTO loose_ends (from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond) VALUES `)
+		args := make([]any, 0, len(chunk)*11)
 		for j, r := range chunk {
 			if j > 0 {
 				sb.WriteByte(',')
 			}
-			sb.WriteString(`(?,?,?,?,?,?,?,?,?)`)
-			args = append(args, string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.Cond)
+			sb.WriteString(`(?,?,?,?,?,?,?,?,?,?,?)`)
+			args = append(args, string(r.From), r.Name, r.Kind, r.Scope, r.FilePath, string(r.Dialect), r.SiteStart, r.SiteEnd, r.SiteStartCol, r.SiteEndCol, r.Cond)
 		}
 		tbLoose += time.Since(t0)
 		t0 = time.Now()

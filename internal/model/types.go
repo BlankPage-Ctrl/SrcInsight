@@ -89,10 +89,15 @@ type Container struct {
 	Name string        `json:"name"`
 }
 
-// Range is a 1-indexed, inclusive line range in a file.
+// Range is a 1-indexed range in a file. StartLine/EndLine are inclusive.
+// StartCol/EndCol are 1-indexed byte offsets within the start/end line:
+// StartCol is the first byte, EndCol is one past the last byte (exclusive,
+// tree-sitter style). Both are zero when unknown.
 type Range struct {
 	StartLine int `json:"start"`
 	EndLine   int `json:"end"`
+	StartCol  int `json:"startCol,omitempty"`
+	EndCol    int `json:"endCol,omitempty"`
 }
 
 // EntryID is a stable five-part identifier; file containers use "file:<relPath>".

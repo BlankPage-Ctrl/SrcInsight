@@ -665,7 +665,7 @@ func resolveRecvOne(ctx context.Context, sv *recvSolver, b *cold.OriginBundle) e
 			continue
 		}
 		for _, t := range targets {
-			lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+			lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 			if !lr.Valid() {
 				continue
 			}
@@ -785,7 +785,7 @@ func PromoteRecvReverse(ctx context.Context, s resolve.Store, bundles []cold.Ori
 				return err
 			}
 			for _, t := range targets {
-				lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, Cond: le.Cond}
+				lr := cold.LinkRow{Origin: le.From, Target: t.ID, Kind: le.Kind, SiteStart: le.SiteStart, SiteEnd: le.SiteEnd, SiteStartCol: le.SiteStartCol, SiteEndCol: le.SiteEndCol, Cond: le.Cond}
 				if lr.Valid() {
 					promos = append(promos, promo{link: lr, lose: le})
 				}

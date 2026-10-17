@@ -45,7 +45,7 @@ func ResolveFileWithAlias(
 	links = make([]cold.LinkRow, 0, len(fns))
 	loose = make([]cold.LooseEndRow, 0, len(fns))
 	addLink := func(origin model.EntryID, target model.EntryID, kind string, site model.Range, cond string) {
-		r := cold.LinkRow{Origin: origin, Target: target, Kind: kind, SiteStart: site.StartLine, SiteEnd: site.EndLine, Cond: cond}
+		r := cold.LinkRow{Origin: origin, Target: target, Kind: kind, SiteStart: site.StartLine, SiteEnd: site.EndLine, SiteStartCol: site.StartCol, SiteEndCol: site.EndCol, Cond: cond}
 		if !r.Valid() {
 			return
 		}
@@ -60,15 +60,17 @@ func ResolveFileWithAlias(
 			return
 		}
 		loose = append(loose, cold.LooseEndRow{
-			From:      from,
-			Name:      name,
-			Kind:      kind,
-			Scope:     scope,
-			FilePath:  path,
-			Dialect:   dialect,
-			SiteStart: site.StartLine,
-			SiteEnd:   site.EndLine,
-			Cond:      cond,
+			From:         from,
+			Name:         name,
+			Kind:         kind,
+			Scope:        scope,
+			FilePath:     path,
+			Dialect:      dialect,
+			SiteStart:    site.StartLine,
+			SiteEnd:      site.EndLine,
+			SiteStartCol: site.StartCol,
+			SiteEndCol:   site.EndCol,
+			Cond:         cond,
 		})
 	}
 

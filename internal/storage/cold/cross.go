@@ -176,7 +176,7 @@ func (v *Vault) FetchLooseByRefNames(ctx context.Context, q querier, names []str
 			lowerPlace[idx] = "?"
 			args = append(args, strings.ToLower(n))
 		}
-		qStr := `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends WHERE lower(ref_name) IN (` + strings.Join(lowerPlace, ",") + `) AND (scope = 'internal' OR scope LIKE 'internal:%')`
+		qStr := `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond FROM loose_ends WHERE lower(ref_name) IN (` + strings.Join(lowerPlace, ",") + `) AND (scope = 'internal' OR scope LIKE 'internal:%')`
 		if len(excludeFiles) > 0 {
 			ex := make([]string, 0, len(excludeFiles))
 			for f := range excludeFiles {
@@ -198,7 +198,7 @@ func (v *Vault) FetchLooseByRefNames(ctx context.Context, q querier, names []str
 		}
 		for rows.Next() {
 			var r LooseEndRow
-			if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.Cond); err != nil {
+			if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -214,14 +214,15 @@ func (v *Vault) FetchLooseByRefNames(ctx context.Context, q querier, names []str
 }
 
 // DeleteLooseEnd removes one loose-end row by key plus site. The site
-// predicate keeps sibling call sites intact.
-func (v *Vault) DeleteLooseEnd(ctx context.Context, q querier, from model.EntryID, refName, refKind string, siteStart, siteEnd int) error {
+// predicate keeps sibling call sites intact; the column pair disambiguates
+// multiple references on the same line.
+func (v *Vault) DeleteLooseEnd(ctx context.Context, q querier, from model.EntryID, refName, refKind string, siteStart, siteEnd, siteStartCol, siteEndCol int) error {
 	var err error
 	if tx, ok := q.(*sql.Tx); ok {
-		_, err = tx.StmtContext(ctx, v.stmts.deleteLooseEnd).ExecContext(ctx, string(from), refName, refKind, siteStart, siteEnd)
+		_, err = tx.StmtContext(ctx, v.stmts.deleteLooseEnd).ExecContext(ctx, string(from), refName, refKind, siteStart, siteEnd, siteStartCol, siteEndCol)
 	} else {
 		_, _ = q.QueryContext(ctx, `SELECT 1`)
-		_, err = v.db.ExecContext(ctx, `DELETE FROM loose_ends WHERE from_entry = ? AND ref_name = ? AND ref_kind = ? AND site_start = ? AND site_end = ?`, string(from), refName, refKind, siteStart, siteEnd)
+		_, err = v.db.ExecContext(ctx, `DELETE FROM loose_ends WHERE from_entry = ? AND ref_name = ? AND ref_kind = ? AND site_start = ? AND site_end = ? AND site_start_col = ? AND site_end_col = ?`, string(from), refName, refKind, siteStart, siteEnd, siteStartCol, siteEndCol)
 	}
 	if err != nil {
 		return fmt.Errorf("cold: delete loose %s %s: %w", from, refName, err)

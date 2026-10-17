@@ -80,10 +80,10 @@ func prepareAll(db *sql.DB) (*statements, error) {
 		{&s.allEntries, `SELECT id, kind, name, qualified_name, file_path, dialect, start_line, end_line, signature, doc, test_title, tags, vessel_kind, vessel_name, vessel_id FROM entries ORDER BY id`},
 		{&s.deleteEntriesByFile, `DELETE FROM entries WHERE file_path = ?`},
 		{&s.entryByID, `SELECT id, kind, name, qualified_name, file_path, dialect, start_line, end_line, signature, doc, test_title, tags, vessel_kind, vessel_name, vessel_id FROM entries WHERE id = ?`},
-		{&s.insertLink, `INSERT OR IGNORE INTO links (origin, target, kind, site_start, site_end, cond) VALUES (?, ?, ?, ?, ?, ?)`},
-		{&s.allLinks, `SELECT origin, target, kind, site_start, site_end, cond FROM links ORDER BY origin, target, kind, site_start, site_end`},
+		{&s.insertLink, `INSERT OR IGNORE INTO links (origin, target, kind, site_start, site_end, site_start_col, site_end_col, cond) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`},
+		{&s.allLinks, `SELECT origin, target, kind, site_start, site_end, site_start_col, site_end_col, cond FROM links ORDER BY origin, target, kind, site_start, site_end, site_start_col, site_end_col`},
 		// Incoming cross-file links carry the (kind, name) re-resolution key.
-		{&s.incomingLinks, `SELECT l.origin, l.kind, t.kind, t.name, l.site_start, l.site_end, l.cond FROM links l
+		{&s.incomingLinks, `SELECT l.origin, l.kind, t.kind, t.name, l.site_start, l.site_end, l.site_start_col, l.site_end_col, l.cond FROM links l
 			JOIN entries t ON t.id = l.target
 			JOIN entries o ON o.id = l.origin
 			WHERE t.file_path = ? AND o.file_path <> ?`},
@@ -97,11 +97,11 @@ func prepareAll(db *sql.DB) (*statements, error) {
 		{&s.deleteRecvBindByFile, `DELETE FROM recv_binds WHERE file_path = ?`},
 		{&s.recvBindsByFile, `SELECT file_path, owner, recv, type_name, via_call FROM recv_binds WHERE file_path = ? ORDER BY id`},
 		{&s.recvBindsByType, `SELECT file_path, owner, recv, type_name, via_call FROM recv_binds WHERE type_name = ? ORDER BY file_path`},
-		{&s.looseEndsByFile, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends WHERE file_path = ? ORDER BY from_entry, ref_name, site_start, site_end`},
-		{&s.insertLooseEnd, `INSERT INTO loose_ends (from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`},
-		{&s.allLooseEnds, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends ORDER BY from_entry, ref_name, site_start, site_end`},
-		{&s.deleteLooseEnd, `DELETE FROM loose_ends WHERE from_entry = ? AND ref_name = ? AND ref_kind = ? AND site_start = ? AND site_end = ?`},
-		{&s.looseEndsByOwner, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, cond FROM loose_ends WHERE from_entry = ? ORDER BY ref_name, ref_kind, site_start, site_end`},
+		{&s.looseEndsByFile, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond FROM loose_ends WHERE file_path = ? ORDER BY from_entry, ref_name, site_start, site_end`},
+		{&s.insertLooseEnd, `INSERT INTO loose_ends (from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`},
+		{&s.allLooseEnds, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond FROM loose_ends ORDER BY from_entry, ref_name, site_start, site_end`},
+		{&s.deleteLooseEnd, `DELETE FROM loose_ends WHERE from_entry = ? AND ref_name = ? AND ref_kind = ? AND site_start = ? AND site_end = ? AND site_start_col = ? AND site_end_col = ?`},
+		{&s.looseEndsByOwner, `SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond FROM loose_ends WHERE from_entry = ? ORDER BY ref_name, ref_kind, site_start, site_end`},
 		{&s.deleteTransportEPByFile, `DELETE FROM transport_endpoints WHERE file_path = ?`},
 		{&s.deleteTransportCallByFile, `DELETE FROM transport_calls WHERE file_path = ?`},
 		{&s.putMeta, `INSERT INTO vault_meta (key, value, updated_at) VALUES (?, ?, ?)
