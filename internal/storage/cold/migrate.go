@@ -8,7 +8,7 @@ import (
 
 // CurrentLedgerVersion is the newest schema version this code understands.
 // Version 1 is baseSchema itself; later versions append a Migration below.
-const CurrentLedgerVersion = 17
+const CurrentLedgerVersion = 18
 
 // Migration is one versioned schema step. Up must be idempotent so a
 // half-applied migration re-runs cleanly.
@@ -144,6 +144,11 @@ CREATE INDEX IF NOT EXISTS idx_tcalls_operation ON transport_calls(operation);
 CREATE INDEX IF NOT EXISTS idx_tcalls_file ON transport_calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_tcalls_owner ON transport_calls(owner);
 `,
+	},
+	{
+		Version: 18,
+		Note:    "transport endpoints by owner for trace transport hops",
+		Up:      `CREATE INDEX IF NOT EXISTS idx_tendpoints_owner ON transport_endpoints(owner)`,
 	},
 }
 

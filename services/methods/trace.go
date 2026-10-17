@@ -73,6 +73,9 @@ const (
 	traceDirectedDepth = 12
 	traceDepthCeiling  = 25
 	traceCallKindOnly  = model.EdgeCalls
+
+	traceTransportFanout  = 16
+	traceTransportPreload = 5000
 )
 
 func (a TraceAsk) withDefaults() TraceAsk {
@@ -295,8 +298,101 @@ type trailLink struct {
 	edge model.Edge
 }
 
-// walkForward BFSes calls edges with at most one unnamed gap node.
-func walkForward(ctx context.Context, v *cold.Vault, seed model.EntryID, named map[model.EntryID]struct{}, maxNodes int) (map[model.EntryID]trailLink, []model.EntryID, error) {
+// transportHop is one synthesized transport edge target plus its call-site.
+type transportHop struct {
+	to   model.EntryID
+	site model.Range
+}
+
+type transportKey struct {
+	id      model.EntryID
+	reverse bool
+}
+
+// transportWalk resolves cross-transport neighbors for one Trace run from the
+// transport hint tables preloaded once. Forward walks a client call owner to
+// its matching server endpoints; reverse walks a server endpoint back to its
+// callers. Owners without a resolved entry are dropped.
+type transportWalk struct {
+	calls     []cold.TransportCallRow
+	endpoints []cold.TransportEndpointRow
+	byCaller  map[model.EntryID][]cold.TransportCallRow
+	byOwner   map[model.EntryID][]cold.TransportEndpointRow
+	cache     map[transportKey][]transportHop
+}
+
+// newTransportWalk preloads every transport hint once. A vault without hints
+// returns a nil walker so Trace skips transport entirely.
+func newTransportWalk(ctx context.Context, v *cold.Vault) (*transportWalk, error) {
+	calls, err := v.FetchTransportCallsByMethod(ctx, "", traceTransportPreload)
+	if err != nil {
+		return nil, err
+	}
+	endpoints, err := v.FetchTransportEndpointsByMethod(ctx, "", traceTransportPreload)
+	if err != nil {
+		return nil, err
+	}
+	if len(calls) == 0 && len(endpoints) == 0 {
+		return nil, nil
+	}
+	w := &transportWalk{
+		calls:     calls,
+		endpoints: endpoints,
+		byCaller:  make(map[model.EntryID][]cold.TransportCallRow),
+		byOwner:   make(map[model.EntryID][]cold.TransportEndpointRow),
+		cache:     make(map[transportKey][]transportHop),
+	}
+	for _, c := range calls {
+		w.byCaller[c.Owner] = append(w.byCaller[c.Owner], c)
+	}
+	for _, e := range endpoints {
+		w.byOwner[e.Owner] = append(w.byOwner[e.Owner], e)
+	}
+	return w, nil
+}
+
+// Neighbors returns transport-linked entries touching id, capped and sorted.
+func (w *transportWalk) Neighbors(id model.EntryID, reverse bool) []transportHop {
+	key := transportKey{id: id, reverse: reverse}
+	if hops, ok := w.cache[key]; ok {
+		return hops
+	}
+	var hops []transportHop
+	seen := make(map[model.EntryID]struct{})
+	add := func(to model.EntryID, site model.Range) {
+		if to == "" {
+			return
+		}
+		if _, ok := seen[to]; ok {
+			return
+		}
+		seen[to] = struct{}{}
+		hops = append(hops, transportHop{to: to, site: site})
+	}
+	if reverse {
+		for _, ep := range w.byOwner[id] {
+			for _, f := range matchEndpoint(ep, w.calls) {
+				add(f.Caller, model.Range{StartLine: f.Call.SiteStart, EndLine: f.Call.SiteStart})
+			}
+		}
+	} else {
+		for _, c := range w.byCaller[id] {
+			for _, f := range matchCall(c, w.endpoints) {
+				add(f.Endpoint, model.Range{StartLine: f.Call.SiteStart, EndLine: f.Call.SiteStart})
+			}
+		}
+	}
+	sort.Slice(hops, func(i, j int) bool { return hops[i].to < hops[j].to })
+	if len(hops) > traceTransportFanout {
+		hops = hops[:traceTransportFanout]
+	}
+	w.cache[key] = hops
+	return hops
+}
+
+// walkForward BFSes calls edges with at most one unnamed gap node; when tw is
+// set, transport hops join as named nodes.
+func walkForward(ctx context.Context, v *cold.Vault, tw *transportWalk, seed model.EntryID, named map[model.EntryID]struct{}, maxNodes int) (map[model.EntryID]trailLink, []model.EntryID, error) {
 	parent := map[model.EntryID]trailLink{seed: {}}
 	type item struct {
 		id    model.EntryID
@@ -322,10 +418,9 @@ func walkForward(ctx context.Context, v *cold.Vault, seed model.EntryID, named m
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, ne := range nes {
-			nid := ne.Ref.ID
+		push := func(nid model.EntryID, kind string, site model.Range, cond string) {
 			if _, seen := parent[nid]; seen {
-				continue
+				return
 			}
 			gaps := cur.gaps
 			if _, ok := named[nid]; ok {
@@ -334,10 +429,18 @@ func walkForward(ctx context.Context, v *cold.Vault, seed model.EntryID, named m
 				gaps++
 			}
 			if gaps > 1 {
-				continue
+				return
 			}
-			parent[nid] = trailLink{prev: cur.id, edge: model.Edge{From: cur.id, To: nid, Kind: ne.Kind, SiteRange: ne.Ref.SiteRange, Cond: ne.Ref.Cond}}
+			parent[nid] = trailLink{prev: cur.id, edge: model.Edge{From: cur.id, To: nid, Kind: kind, SiteRange: site, Cond: cond}}
 			queue = append(queue, item{id: nid, depth: cur.depth + 1, gaps: gaps})
+		}
+		for _, ne := range nes {
+			push(ne.Ref.ID, ne.Kind, ne.Ref.SiteRange, ne.Ref.Cond)
+		}
+		if tw != nil {
+			for _, h := range tw.Neighbors(cur.id, false) {
+				push(h.to, model.EdgeTransport, h.site, "")
+			}
 		}
 	}
 	return parent, reached, nil
@@ -365,7 +468,7 @@ func layTrail(parent map[model.EntryID]trailLink, target model.EntryID) Trail {
 }
 
 // walkBoth searches from both ends and stitches at the first shared node.
-func walkBoth(ctx context.Context, v *cold.Vault, seed model.EntryID, sinks map[model.EntryID]struct{}, maxNodes int) (Trail, bool, error) {
+func walkBoth(ctx context.Context, v *cold.Vault, tw *transportWalk, seed model.EntryID, sinks map[model.EntryID]struct{}, maxNodes int) (Trail, bool, error) {
 	if _, ok := sinks[seed]; ok {
 		return Trail{}, false, nil
 	}
@@ -418,6 +521,15 @@ func walkBoth(ctx context.Context, v *cold.Vault, seed model.EntryID, sinks map[
 					forward[nid] = trailLink{prev: id, edge: model.Edge{From: id, To: nid, Kind: ne.Kind, SiteRange: ne.Ref.SiteRange, Cond: ne.Ref.Cond}}
 					next = append(next, nid)
 				}
+				if tw != nil {
+					for _, h := range tw.Neighbors(id, false) {
+						if _, seen := forward[h.to]; seen {
+							continue
+						}
+						forward[h.to] = trailLink{prev: id, edge: model.Edge{From: id, To: h.to, Kind: model.EdgeTransport, SiteRange: h.site}}
+						next = append(next, h.to)
+					}
+				}
 			}
 			if len(next) == 0 {
 				break
@@ -437,6 +549,15 @@ func walkBoth(ctx context.Context, v *cold.Vault, seed model.EntryID, sinks map[
 					}
 					backward[nid] = backLink{next: id, edge: model.Edge{From: nid, To: id, Kind: ne.Kind, SiteRange: ne.Ref.SiteRange, Cond: ne.Ref.Cond}}
 					next = append(next, nid)
+				}
+				if tw != nil {
+					for _, h := range tw.Neighbors(id, true) {
+						if _, seen := backward[h.to]; seen {
+							continue
+						}
+						backward[h.to] = backLink{next: id, edge: model.Edge{From: h.to, To: id, Kind: model.EdgeTransport, SiteRange: h.site}}
+						next = append(next, h.to)
+					}
 				}
 			}
 			if len(next) == 0 {
@@ -559,6 +680,10 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 		return rep, nil
 	}
 
+	tw, err := newTransportWalk(ctx, v)
+	if err != nil {
+		return TraceReport{}, err
+	}
 	var trails []Trail
 	if directed {
 		fromRows := anchorRows[ask.From]
@@ -571,7 +696,7 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 				if err := ctx.Err(); err != nil {
 					return TraceReport{}, err
 				}
-				if t, ok, err := walkBoth(ctx, v, r.ID, toIDs, ask.MaxDepth); err != nil {
+				if t, ok, err := walkBoth(ctx, v, tw, r.ID, toIDs, ask.MaxDepth); err != nil {
 					return TraceReport{}, err
 				} else if ok {
 					trails = append(trails, t)
@@ -592,7 +717,7 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 			if err := ctx.Err(); err != nil {
 				return TraceReport{}, err
 			}
-			parent, reached, err := walkForward(ctx, v, s, named, ask.MaxDepth)
+			parent, reached, err := walkForward(ctx, v, tw, s, named, ask.MaxDepth)
 			if err != nil {
 				return TraceReport{}, err
 			}
