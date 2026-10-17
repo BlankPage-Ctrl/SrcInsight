@@ -86,6 +86,7 @@ const commentPattern = `(comment) @doc`
 const (
 	capRecv     = "call.receiver"
 	capCallName = "call.name"
+	capCallExpr = "call"
 )
 
 // Compiled queries, one set per grammar; TS and TSX each need their own.
@@ -101,6 +102,7 @@ type dialectQueries struct {
 	// capture id lookups
 	defKinds     map[uint32]model.Kind
 	callID       uint32
+	callExprID   uint32
 	recvID       uint32
 	jsxNameID    uint32
 	hasJSX       bool
@@ -196,6 +198,9 @@ func mustCompileQueries(lang *sitter.Language) *dialectQueries {
 	if idx, ok := q.callQuery.CaptureIndexForName(capCallName); ok {
 		q.callID = uint32(idx)
 	}
+	if idx, ok := q.callQuery.CaptureIndexForName(capCallExpr); ok {
+		q.callExprID = uint32(idx)
+	}
 	if idx, ok := q.callQuery.CaptureIndexForName(capRecv); ok {
 		q.recvID = uint32(idx)
 	}
@@ -248,8 +253,8 @@ func Extract(path string, src []byte, tree *sitter.Tree) (extract.FileExtract, e
 	constDefs := collectConstDefs(q, src, root)
 	defs = append(defs, constDefs...)
 
-	allCalls := collectAllCalls(q, src, root)
-	allCalls = append(allCalls, collectAllJSX(q, src, root)...)
+	rawCalls := collectAllCalls(q, src, root)
+	allCalls := append(rawCalls, collectAllJSX(q, src, root)...)
 
 	fe.RecvBindings = collectRecvBindings(q, src, root)
 	fe.Imports = collectImports(q, src, root)
@@ -276,7 +281,7 @@ func Extract(path string, src []byte, tree *sitter.Tree) (extract.FileExtract, e
 		fe.Functions = append(fe.Functions, fn)
 		fe.Endpoints = append(fe.Endpoints, transportEndpointsForDef(src, d.node, fn, prefixes)...)
 		if d.kind != model.KindConst {
-			fe.Calls = append(fe.Calls, transportCallsForDef(src, d.node, fn, byLocal)...)
+			fe.Calls = append(fe.Calls, transportCallsForDef(rawCalls, src, d.node, fn, byLocal)...)
 		}
 	}
 	fe.Endpoints = append(fe.Endpoints, fileLevelExpressRoutes(src, root)...)
@@ -333,6 +338,7 @@ type callSite struct {
 	full  string
 	site  model.Range
 	node  sitter.Node
+	expr  sitter.Node
 }
 
 // collectAllCalls runs the call query once per file in source order.
@@ -342,7 +348,7 @@ func collectAllCalls(q *dialectQueries, src []byte, root *sitter.Node) []callSit
 	defer qc.Close()
 	matches := qc.Matches(q.callQuery, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
-		var name sitter.Node
+		var name, expr sitter.Node
 		var hasName bool
 		var recv string
 		var start, end uint
@@ -351,6 +357,8 @@ func collectAllCalls(q *dialectQueries, src []byte, root *sitter.Node) []callSit
 			case q.callID:
 				name = c.Node
 				hasName = true
+			case q.callExprID:
+				expr = c.Node
 			case q.recvID:
 				recv = extract.Text(src, &c.Node)
 			}
@@ -367,7 +375,7 @@ func collectAllCalls(q *dialectQueries, src []byte, root *sitter.Node) []callSit
 		} else if recv != "" {
 			full = recv + "." + nm
 		}
-		out = append(out, callSite{start: start, end: end, full: full, site: extract.SiteRange(&name), node: name})
+		out = append(out, callSite{start: start, end: end, full: full, site: extract.SiteRange(&name), node: name, expr: expr})
 	}
 	return out
 }

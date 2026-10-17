@@ -223,21 +223,21 @@ func transportEndpointsForDef(src []byte, def *sitter.Node, fn model.Function, p
 	return out
 }
 
-// transportCallsForDef walks one def body for client fetch hints.
-func transportCallsForDef(src []byte, def *sitter.Node, fn model.Function, byLocal map[string]string) []model.TransportCall {
+// transportCallsForDef buckets file-wide call sites into one def by byte
+// containment, mirroring callsForDef. It reuses the call query output instead
+// of re-walking the def subtree, which nested defs would visit repeatedly.
+func transportCallsForDef(all []callSite, src []byte, def *sitter.Node, fn model.Function, byLocal map[string]string) []model.TransportCall {
+	ds, de := def.StartByte(), def.EndByte()
 	var out []model.TransportCall
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Kind() == "call_expression" {
-			if c := classifyCall(src, n, fn, byLocal); c != nil {
-				out = append(out, *c)
-			}
+	for i := range all {
+		c := &all[i]
+		if c.start < ds || c.end > de {
+			continue
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(uint(i)))
+		if call := classifyCall(src, &c.expr, fn, byLocal); call != nil {
+			out = append(out, *call)
 		}
 	}
-	walk(def)
 	return out
 }
 
