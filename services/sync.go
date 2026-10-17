@@ -211,6 +211,9 @@ func (p *Pipeline) syncLocked(ctx context.Context, hints []string) (SyncResult, 
 	res.Modified = len(modified) + len(tooLarge)
 
 	if res.Changed() > 0 {
+		if err := p.refreshTraceStats(ctx); err != nil {
+			return res, err
+		}
 		// Maintain is costly, so single-file syncs skip it.
 		if res.Changed() == 1 {
 		} else if err := p.vault.Maintain(); err != nil {

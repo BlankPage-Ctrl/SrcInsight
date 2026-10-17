@@ -148,3 +148,13 @@ func (p *Pipeline) stampVersion(ctx context.Context) error {
 	}
 	return p.vault.PutMeta(ctx, cold.MetaRoot, p.rootPath)
 }
+
+// refreshTraceStats recomputes the vault shape summary trace reads to size
+// anchor breadth. It runs only after content changed.
+func (p *Pipeline) refreshTraceStats(ctx context.Context) error {
+	st, err := p.vault.ComputeTraceStats(ctx)
+	if err != nil {
+		return err
+	}
+	return p.vault.PutTraceStats(ctx, st)
+}

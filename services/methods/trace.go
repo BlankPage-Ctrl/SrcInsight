@@ -68,7 +68,6 @@ const (
 	traceMaxTrailsCap  = 4
 	traceVisitCap      = 2000
 	traceDirectedCap   = 8000
-	traceResolveLimit  = 50
 	traceDefaultDepth  = 7
 	traceDirectedDepth = 12
 	traceDepthCeiling  = 25
@@ -171,8 +170,37 @@ func isAskToken(t string) bool {
 	return len(t) > 0
 }
 
+// anchorPolicy sizes per-token anchor breadth from the vault shape summary so
+// the same recipe adapts across projects. search is the candidate fetch cap;
+// ceiling is the per-token upper bound after coverage spreading.
+type anchorPolicy struct {
+	search  int
+	ceiling int
+}
+
+// newAnchorPolicy scales the candidate pool with project size and the per-token
+// ceiling with directory breadth, falling back to the hardcoded base floors
+// when the vault has no stats yet.
+func newAnchorPolicy(stats cold.TraceStats) anchorPolicy {
+	search := traceMaxPerToken * 8
+	if scaled := stats.Entries / 100; scaled > search {
+		search = scaled
+	}
+	if search > cold.MaxSearchLimit {
+		search = cold.MaxSearchLimit
+	}
+	ceiling := traceMaxPerToken
+	if stats.Dirs > ceiling {
+		ceiling = stats.Dirs
+	}
+	if ceiling > traceMaxAnchors {
+		ceiling = traceMaxAnchors
+	}
+	return anchorPolicy{search: search, ceiling: ceiling}
+}
+
 // anchorToken resolves one token exact-first with ranked fallback.
-func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool, pool map[string]struct{}, typeToks []string, lcTokens map[string]struct{}, fileCache map[string]map[string]struct{}) ([]cold.ScoredEntryRow, error) {
+func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool, policy anchorPolicy, pool map[string]struct{}, typeToks []string, lcTokens map[string]struct{}, fileCache map[string]map[string]struct{}) ([]cold.ScoredEntryRow, error) {
 	var rows []cold.ScoredEntryRow
 	for _, mode := range []struct {
 		name string
@@ -186,7 +214,7 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		got, err := mode.call(ctx, token, traceResolveLimit)
+		got, err := mode.call(ctx, token, policy.search)
 		if err != nil {
 			return nil, fmt.Errorf("methods: trace: resolve %q: %w", token, err)
 		}
@@ -251,7 +279,7 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 		}
 	}
 	if !directed && !isAskSymbol(token) {
-		var kept []cold.ScoredEntryRow
+		kept := make([]cold.ScoredEntryRow, 0, len(rows))
 		for _, r := range rows {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -260,14 +288,89 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 				kept = append(kept, r)
 			}
 		}
-		if len(kept) > 0 {
+		// Keep the corroborated set only when it still spans more than one
+		// directory; a single-area collapse would blind reach elsewhere.
+		if len(kept) > 0 && distinctAnchorBuckets(kept) >= 2 {
 			rows = kept
 		}
 	}
-	if len(rows) > traceMaxPerToken {
-		rows = rows[:traceMaxPerToken]
+	max := anchorPerToken(rows, policy)
+	if len(rows) > max {
+		rows = spreadByBucket(rows, max)
 	}
 	return rows, nil
+}
+
+// anchorBucketKey groups sibling definitions by their containing directory.
+func anchorBucketKey(filePath string) string {
+	if i := strings.LastIndexByte(filePath, '/'); i >= 0 {
+		return filePath[:i]
+	}
+	return filePath
+}
+
+// distinctAnchorBuckets counts the directories the rows span.
+func distinctAnchorBuckets(rows []cold.ScoredEntryRow) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		seen[anchorBucketKey(r.FilePath)] = struct{}{}
+	}
+	return len(seen)
+}
+
+// anchorPerToken sizes the per-token cap coverage-first: every spanned
+// directory gets a slot, floored at the base cap and bounded by the policy
+// ceiling derived from vault shape.
+func anchorPerToken(rows []cold.ScoredEntryRow, policy anchorPolicy) int {
+	max := traceMaxPerToken
+	if b := distinctAnchorBuckets(rows); b > max {
+		max = b
+	}
+	if max > policy.ceiling {
+		max = policy.ceiling
+	}
+	return max
+}
+
+// spreadByBucket covers every directory once in ranking order, then refills
+// remaining slots by global rank so one folder cannot crowd out sibling areas.
+func spreadByBucket(rows []cold.ScoredEntryRow, maxN int) []cold.ScoredEntryRow {
+	if maxN <= 0 || len(rows) <= maxN {
+		return rows
+	}
+	byKey := make(map[string][]int, len(rows))
+	order := make([]string, 0, len(rows))
+	for i, r := range rows {
+		k := anchorBucketKey(r.FilePath)
+		if _, ok := byKey[k]; !ok {
+			order = append(order, k)
+		}
+		byKey[k] = append(byKey[k], i)
+	}
+	used := make([]bool, len(rows))
+	out := make([]cold.ScoredEntryRow, 0, maxN)
+	for _, k := range order {
+		if len(out) >= maxN {
+			break
+		}
+		ids := byKey[k]
+		used[ids[0]] = true
+		out = append(out, rows[ids[0]])
+	}
+	for i, r := range rows {
+		if len(out) >= maxN {
+			break
+		}
+		if used[i] {
+			continue
+		}
+		used[i] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 // vesselMentioned reports whether the ask co-mentions the row vessel.
@@ -635,13 +738,18 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 		lcTokens[strings.ToLower(t)] = struct{}{}
 	}
 	fileCache := make(map[string]map[string]struct{})
+	stats, _, err := v.GetTraceStats(ctx)
+	if err != nil {
+		return TraceReport{}, err
+	}
+	policy := newAnchorPolicy(stats)
 	anchorRows := make(map[string][]cold.ScoredEntryRow, len(tokens))
 	named := make(map[model.EntryID]struct{})
 	for _, t := range tokens {
 		if err := ctx.Err(); err != nil {
 			return TraceReport{}, err
 		}
-		rows, err := anchorToken(ctx, v, t, directed, pool, typeToks, lcTokens, fileCache)
+		rows, err := anchorToken(ctx, v, t, directed, policy, pool, typeToks, lcTokens, fileCache)
 		if err != nil {
 			return TraceReport{}, err
 		}

@@ -82,6 +82,14 @@ func TestFullScanWritesEntries(t *testing.T) {
 	if val, found, _ := p.Vault().GetMeta(ctx, cold.MetaExtractor); !found || val != ExtractorVersion {
 		t.Fatalf("extractor meta = %q, %v", val, found)
 	}
+	// Vault shape summary stored for trace anchor sizing.
+	st, ok, err := p.Vault().GetTraceStats(ctx)
+	if err != nil || !ok {
+		t.Fatalf("trace stats = %+v, %v, %v", st, ok, err)
+	}
+	if st.Entries != n || st.Files == 0 || st.Dirs == 0 {
+		t.Fatalf("trace stats = %+v, want entries=%d with files/dirs", st, n)
+	}
 	// Same-file link resolved: validateToken -> decode.
 	links, err := p.Vault().FetchAllLinks(ctx)
 	if err != nil {

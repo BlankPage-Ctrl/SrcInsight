@@ -183,6 +183,9 @@ func (p *Pipeline) fullScanLocked(ctx context.Context, force bool) (SyncResult, 
 		return res, err
 	}
 	if res.Changed() > 0 {
+		if err := p.refreshTraceStats(ctx); err != nil {
+			return res, err
+		}
 		if err := p.vault.Maintain(); err != nil {
 			return res, err
 		}
