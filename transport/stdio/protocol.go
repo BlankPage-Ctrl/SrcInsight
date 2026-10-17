@@ -78,7 +78,7 @@ func NewError(id json.RawMessage, code int, msg string) Response {
 
 func MethodNotFound(id json.RawMessage, method string) Response {
 	r := NewError(id, CodeMethodNotFound, "method not found: "+method)
-	r.Error.Data = "supported in v1: search, graph, trace, sync, index, status, ping, shutdown"
+	r.Error.Data = "supported in v1: search, graph, refs, trace, sync, index, status, ping, shutdown"
 	return r
 }
 

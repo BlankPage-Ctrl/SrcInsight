@@ -33,6 +33,15 @@ export const x = 1;
 	if byLocal["D"] != "./types|named" {
 		t.Errorf("D = %q, want ./types|named", byLocal["D"])
 	}
+	// An aliased named import keeps the local spelling in LocalName and the
+	// original exported name in Alias so resolution can find the definition.
+	for _, im := range fe.Imports {
+		if im.LocalName == "D" {
+			if im.Alias != "C" {
+				t.Errorf("D import alias = %q, want C", im.Alias)
+			}
+		}
+	}
 	// Re-exports ride the import machinery.
 	if byLocal["string"] != "./core/parse.js|re-export" {
 		t.Errorf("string = %q, want re-export", byLocal["string"])

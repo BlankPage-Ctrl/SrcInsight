@@ -8,6 +8,37 @@ import (
 	"srcinsight/internal/storage/cold"
 )
 
+// aliasSourceNames lists candidate definition names for a bare reference: the
+// referenced name plus any import alias' original exported name. Receiver calls
+// keep only the method name, since the alias names the receiver, not the target.
+func aliasSourceNames(le cold.LooseEndRow, recv, simple string, candImps []cold.ImportRow) []string {
+	if recv != "" {
+		return []string{simple}
+	}
+	names := []string{le.Name}
+	for _, imp := range candImps {
+		if imp.Kind == "named" && imp.Alias != "" && imp.Alias != "*" && imp.Alias != le.Name {
+			names = append(names, imp.Alias)
+		}
+	}
+	return names
+}
+
+// resolveLooseNames tries each candidate name until one resolves, so an aliased
+// import falls back to its original exported name.
+func resolveLooseNames(ctx context.Context, s Store, candidateFiles []string, names []string, wantType bool, resolver ImportResolver, bundleImports map[string][]cold.ImportRow, pending Pending, lc *LookupCache) ([]cold.EntryRow, error) {
+	for _, name := range names {
+		rows, err := DefiningTargets(ctx, s, candidateFiles, name, wantType, resolver, bundleImports, pending, lc)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			return rows, nil
+		}
+	}
+	return nil, nil
+}
+
 // ResolveOutgoingCross promotes internal loose ends to links via filtered reads.
 func ResolveOutgoingCross(ctx context.Context, s Store, b *cold.OriginBundle) error {
 	if b == nil || len(b.LooseEnds) == 0 {
@@ -53,14 +84,10 @@ func ResolveOutgoingCross(ctx context.Context, s Store, b *cold.OriginBundle) er
 			keepLoose = append(keepLoose, le)
 			continue
 		}
-		targetName := le.Name
-		if recv != "" {
-			targetName = simple
-		}
 		isHeritage := le.Kind == model.EdgeExtends || le.Kind == model.EdgeImplements
 		isTypeRef := isHeritage || le.Kind == model.EdgeParam || le.Kind == model.EdgeReturn
 		isUses := le.Kind == model.EdgeUses
-		rows, err := DefiningTargets(ctx, s, candidateFiles, targetName, isTypeRef && !isUses, resolver, map[string][]cold.ImportRow{b.Origin.Path: b.Imports}, nil, lc)
+		rows, err := resolveLooseNames(ctx, s, candidateFiles, aliasSourceNames(le, recv, simple, candImps), isTypeRef && !isUses, resolver, map[string][]cold.ImportRow{b.Origin.Path: b.Imports}, nil, lc)
 		if err != nil {
 			return err
 		}
@@ -132,13 +159,9 @@ func ResolveOutgoingCrossWithPending(ctx context.Context, s Store, b *cold.Origi
 			keepLoose = append(keepLoose, le)
 			continue
 		}
-		targetName := le.Name
-		if recv != "" {
-			targetName = simple
-		}
 		isHeritage := le.Kind == model.EdgeExtends || le.Kind == model.EdgeImplements
 		isTypeRef := isHeritage || le.Kind == model.EdgeParam || le.Kind == model.EdgeReturn
-		rows, err := DefiningTargets(ctx, s, candidateFiles, targetName, isTypeRef, resolver, bundleImports, pending, lc)
+		rows, err := resolveLooseNames(ctx, s, candidateFiles, aliasSourceNames(le, recv, simple, candImps), isTypeRef, resolver, bundleImports, pending, lc)
 		if err != nil {
 			return err
 		}

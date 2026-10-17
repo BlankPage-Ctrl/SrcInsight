@@ -867,11 +867,16 @@ func classifyImport(src []byte, stmt *sitter.Node, source string) []extract.Impo
 			if spec.Kind() != "import_specifier" {
 				continue
 			}
-			im := extract.ImportStmt{Source: source, Kind: "named"}
-			im.LocalName = extract.Text(src, spec.ChildByFieldName("name"))
+			name := extract.Text(src, spec.ChildByFieldName("name"))
+			if name == "" {
+				continue
+			}
+			// LocalName is the spelling used in this file; Alias keeps the
+			// original exported name so resolution can find the definition.
+			im := extract.ImportStmt{Source: source, Kind: "named", LocalName: name}
 			if a := spec.ChildByFieldName("alias"); a != nil {
-				im.Alias = extract.Text(src, a)
-				im.LocalName = im.Alias
+				im.Alias = name
+				im.LocalName = extract.Text(src, a)
 			}
 			stmts = append(stmts, im)
 		}

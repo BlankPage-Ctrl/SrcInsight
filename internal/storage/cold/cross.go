@@ -213,6 +213,43 @@ func (v *Vault) FetchLooseByRefNames(ctx context.Context, q querier, names []str
 	return out, nil
 }
 
+// looseRefDefaultCap bounds a basename loose-end lookup when limit <= 0.
+const looseRefDefaultCap = 1000
+
+// FetchLooseByRefBasename returns internal-scope loose ends whose ref name is
+// exactly name or a receiver-qualified "<recv>.name", so method call sites
+// (this.foo / obj.foo) still surface as candidates. Read-only; the caller
+// verifies each candidate through imports before trusting it.
+func (v *Vault) FetchLooseByRefBasename(ctx context.Context, q querier, name string, limit int) ([]LooseEndRow, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > looseRefDefaultCap {
+		limit = looseRefDefaultCap
+	}
+	pat := "%." + escapeLikePattern(strings.ToLower(name))
+	rows, err := q.QueryContext(ctx,
+		`SELECT from_entry, ref_name, ref_kind, scope, file_path, dialect, site_start, site_end, site_start_col, site_end_col, cond FROM loose_ends
+			WHERE (lower(ref_name) = lower(?) OR lower(ref_name) LIKE ? ESCAPE '\')
+			  AND (scope = 'internal' OR scope LIKE 'internal:%')
+			ORDER BY file_path, from_entry, site_start, site_end LIMIT ?`,
+		name, pat, limit)
+	if err != nil {
+		return nil, fmt.Errorf("cold: fetch loose by basename %s: %w", name, err)
+	}
+	defer rows.Close()
+	var out []LooseEndRow
+	for rows.Next() {
+		var r LooseEndRow
+		if err := rows.Scan(&r.From, &r.Name, &r.Kind, &r.Scope, &r.FilePath, &r.Dialect, &r.SiteStart, &r.SiteEnd, &r.SiteStartCol, &r.SiteEndCol, &r.Cond); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DeleteLooseEnd removes one loose-end row by key plus site. The site
 // predicate keeps sibling call sites intact; the column pair disambiguates
 // multiple references on the same line.

@@ -62,6 +62,7 @@ func (p *Pipeline) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer)
 
 	methods.MustRegister(srv, "search", methods.New(p.Vault()).HandleSearch)
 	methods.MustRegister(srv, "graph", methods.New(p.Vault()).HandleGraph)
+	methods.MustRegister(srv, "refs", methods.New(p.Vault(), methods.WithLive(p)).HandleRefs)
 	methods.MustRegister(srv, "trace", methods.New(p.Vault()).HandleTrace)
 	methods.MustRegister(srv, stdio.MethodSync, p.HandleSync)
 	methods.MustRegister(srv, stdio.MethodIndex, p.HandleIndex)

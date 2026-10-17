@@ -132,13 +132,11 @@ func PrimeLookup(ctx context.Context, s Store, bundles []cold.OriginBundle, bund
 			if recv != "" {
 				probe = recv
 			}
-			target := le.Name
-			if recv != "" {
-				target = simple
-			}
 			for _, imp := range importByLocal[probe] {
 				for _, f := range lc.CandidatePaths(resolver, b.Origin.Path, imp.Source) {
-					addWant(f, target)
+					for _, target := range aliasSourceNames(le, recv, simple, []cold.ImportRow{imp}) {
+						addWant(f, target)
+					}
 				}
 			}
 		}
@@ -202,14 +200,18 @@ func PrimeLookup(ctx context.Context, s Store, bundles []cold.OriginBundle, bund
 					if imp.LocalName != n && imp.LocalName != "*" {
 						continue
 					}
+					child := n
+					if imp.LocalName == n && imp.Alias != "" && imp.Alias != "*" {
+						child = imp.Alias
+					}
 					for _, f := range lc.CandidatePaths(resolver, file, imp.Source) {
 						m, ok := wanted[f]
 						if !ok {
 							m = make(map[string]struct{})
 							wanted[f] = m
 						}
-						if _, dup := m[n]; !dup {
-							m[n] = struct{}{}
+						if _, dup := m[child]; !dup {
+							m[child] = struct{}{}
 							grew = true
 						}
 					}
@@ -320,23 +322,27 @@ func DefiningTargets(ctx context.Context, s Store, frontier []string, name strin
 		lc = NewLookupCache()
 	}
 	visited := make(map[string]struct{}, len(frontier)*2)
-	queue := append([]string(nil), frontier...)
+	queue := make([]FileName, 0, len(frontier))
+	for _, file := range frontier {
+		queue = append(queue, FileName{File: file, Name: name})
+	}
 	for depth := 0; depth <= maxFollowDepth && len(queue) > 0; depth++ {
-		// One chunked query serves every missing frontier file.
+		// One chunked query serves every missing frontier file and name.
 		var miss []FileName
-		for _, file := range queue {
-			if _, seen := visited[file]; seen {
+		for _, nf := range queue {
+			vkey := nf.File + "\x00" + nf.Name
+			if _, seen := visited[vkey]; seen {
 				continue
 			}
 			if len(lc.known) > 0 {
-				if _, ok := lc.known[file]; !ok {
-					visited[file] = struct{}{}
+				if _, ok := lc.known[nf.File]; !ok {
+					visited[vkey] = struct{}{}
 					continue
 				}
 			}
-			key := PairKey(file, name)
-			if pm, ok := pending[file]; ok {
-				if rows, ok := pm[strings.ToLower(name)]; ok && len(rows) > 0 {
+			key := PairKey(nf.File, nf.Name)
+			if pm, ok := pending[nf.File]; ok {
+				if rows, ok := pm[strings.ToLower(nf.Name)]; ok && len(rows) > 0 {
 					lc.pairs[key] = rows
 					continue
 				}
@@ -344,7 +350,7 @@ func DefiningTargets(ctx context.Context, s Store, frontier []string, name strin
 			if _, ok := lc.pairs[key]; ok {
 				continue
 			}
-			miss = append(miss, FileName{File: file, Name: name})
+			miss = append(miss, nf)
 		}
 		if len(miss) > 0 {
 			batch, err := s.FetchTargetsBatch(ctx, miss)
@@ -355,18 +361,19 @@ func DefiningTargets(ctx context.Context, s Store, frontier []string, name strin
 				lc.pairs[PairKey(m.File, m.Name)] = batch[PairKey(m.File, m.Name)]
 			}
 		}
-		var next []string
-		for _, file := range queue {
-			if _, seen := visited[file]; seen {
+		var next []FileName
+		for _, nf := range queue {
+			vkey := nf.File + "\x00" + nf.Name
+			if _, seen := visited[vkey]; seen {
 				continue
 			}
-			visited[file] = struct{}{}
+			visited[vkey] = struct{}{}
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			rows := lc.pairs[PairKey(file, name)]
+			rows := lc.pairs[PairKey(nf.File, nf.Name)]
 			// Exact-case hits displace case-folded collisions.
-			if exact := ExactCase(rows, name); len(exact) > 0 {
+			if exact := ExactCase(rows, nf.Name); len(exact) > 0 {
 				rows = exact
 			}
 			if wantType {
@@ -381,21 +388,21 @@ func DefiningTargets(ctx context.Context, s Store, frontier []string, name strin
 			if len(rows) > 0 {
 				return rows, nil
 			}
-			imps, ok := bundleImports[file]
+			imps, ok := bundleImports[nf.File]
 			if !ok {
 				var ok2 bool
-				if imps, ok2 = lc.imports[file]; !ok2 {
-					fetched, err := s.FetchImports(ctx, file)
+				if imps, ok2 = lc.imports[nf.File]; !ok2 {
+					fetched, err := s.FetchImports(ctx, nf.File)
 					if err != nil {
 						continue
 					}
 					imps = fetched
-					lc.imports[file] = fetched
+					lc.imports[nf.File] = fetched
 				}
 			}
 			// Export aliases resolve without a file hop.
-			if aliased := AliasLocal(imps, name); aliased != "" {
-				rows, err := FileRows(ctx, s, pending, lc, file, aliased)
+			if aliased := AliasLocal(imps, nf.Name); aliased != "" {
+				rows, err := FileRows(ctx, s, pending, lc, nf.File, aliased)
 				if err != nil {
 					return nil, err
 				}
@@ -416,10 +423,18 @@ func DefiningTargets(ctx context.Context, s Store, frontier []string, name strin
 				if imp.Kind != "re-export" {
 					continue
 				}
-				if imp.LocalName != name && imp.LocalName != "*" {
+				if imp.LocalName != nf.Name && imp.LocalName != "*" {
 					continue
 				}
-				next = append(next, lc.CandidatePaths(resolver, file, imp.Source)...)
+				// A named re-export rename (export {a as b}) searches the
+				// source under the original name a.
+				child := nf.Name
+				if imp.LocalName == nf.Name && imp.Alias != "" && imp.Alias != "*" {
+					child = imp.Alias
+				}
+				for _, p := range lc.CandidatePaths(resolver, nf.File, imp.Source) {
+					next = append(next, FileName{File: p, Name: child})
+				}
 			}
 		}
 		queue = next
