@@ -35,13 +35,20 @@ func TestIsTestPath(t *testing.T) {
 }
 
 func TestIsGeneratedPath(t *testing.T) {
-	for _, p := range []string{"src/types.d.ts", "gen/foo.pb.go", "a.min.js", "x/__generated__/y.ts"} {
+	for _, p := range []string{
+		"src/types.d.ts", "gen/foo.pb.go", "a.min.js", "x/__generated__/y.ts",
+		"Codryn-Desktop/frontend/wailsjs/go/models.ts",
+		"pkg/generated/api.ts",
+		"src/foo.generated.ts",
+	} {
 		if !IsGeneratedPath(p) {
 			t.Fatalf("IsGeneratedPath(%q) = false, want true", p)
 		}
 	}
-	if IsGeneratedPath("src/a.ts") {
-		t.Fatal("IsGeneratedPath(src/a.ts) = true, want false")
+	for _, p := range []string{"src/a.ts", "src/general.ts", "src/wailsjsUtils.ts"} {
+		if IsGeneratedPath(p) {
+			t.Fatalf("IsGeneratedPath(%q) = true, want false", p)
+		}
 	}
 }
 

@@ -96,6 +96,49 @@ func (v *Vault) CountCallers(ctx context.Context, id model.EntryID) (int, error)
 	return n, nil
 }
 
+// CountCallersBatch counts incoming calls edges for many targets in one
+// round-trip. Unknown ids map to the zero value. Chunked to stay well under
+// SQLite's bound-variable limit.
+func (v *Vault) CountCallersBatch(ctx context.Context, ids []model.EntryID) (map[model.EntryID]int, error) {
+	out := make(map[model.EntryID]int, len(ids))
+	const chunk = 400
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		ph := strings.Repeat("?,", len(part))
+		ph = ph[:len(ph)-1]
+		args := make([]any, 0, len(part)+1)
+		args = append(args, model.EdgeCalls)
+		for _, id := range part {
+			args = append(args, string(id))
+		}
+		rows, err := v.db.QueryContext(ctx,
+			`SELECT target, COUNT(*) FROM links WHERE kind = ? AND target IN (`+ph+`) GROUP BY target`,
+			args...)
+		if err != nil {
+			return nil, fmt.Errorf("cold: count callers batch: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("cold: scan callers batch: %w", err)
+			}
+			out[model.EntryID(id)] = n
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("cold: count callers batch: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // FetchNeighbors resolves one node's edge neighbors in ID order. The join
 // keeps live rows only, so removed targets never leak.
 func (v *Vault) FetchNeighbors(ctx context.Context, id model.EntryID, kinds []string, reverse bool) ([]model.FunctionRef, error) {

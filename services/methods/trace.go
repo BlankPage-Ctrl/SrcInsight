@@ -75,7 +75,15 @@ const (
 
 	traceTransportFanout  = 16
 	traceTransportPreload = 5000
+
+	// One non-call hop (type/parameter/use) may bridge a static-call break,
+	// matching the "at most one unnamed bridge" rule. The probe budget keeps
+	// the extra edge query bounded on wide graphs.
+	traceBridgeProbeCap = 64
 )
+
+// traceBridgeKinds are the relationship edges allowed to bridge a call gap.
+var traceBridgeKinds = []string{model.EdgeUses, model.EdgeParam, model.EdgeReturn}
 
 func (a TraceAsk) withDefaults() TraceAsk {
 	if a.MaxDepth <= 0 {
@@ -199,37 +207,132 @@ func newAnchorPolicy(stats cold.TraceStats) anchorPolicy {
 	return anchorPolicy{search: search, ceiling: ceiling}
 }
 
-// anchorToken resolves one token exact-first with ranked fallback.
-func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool, policy anchorPolicy, pool map[string]struct{}, typeToks []string, lcTokens map[string]struct{}, fileCache map[string]map[string]struct{}) ([]cold.ScoredEntryRow, error) {
-	var rows []cold.ScoredEntryRow
-	for _, mode := range []struct {
-		name string
+// anchorModeRank orders search channels best-first.
+func anchorModeRank(mode string) int {
+	switch mode {
+	case "exact":
+		return 0
+	case "prefix":
+		return 1
+	case "fts":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// gatherAnchorRows unions every search channel for one token instead of
+// stopping at the first non-empty one. Exact-first was why "discover" resolved
+// only to an exact wrapper and never to discoverPlugins: ranking, not channel
+// order, must decide.
+func gatherAnchorRows(ctx context.Context, v *cold.Vault, token string, policy anchorPolicy) ([]cold.ScoredEntryRow, error) {
+	var out []cold.ScoredEntryRow
+	idx := make(map[model.EntryID]int)
+	merge := func(got []cold.ScoredEntryRow) {
+		for _, r := range got {
+			if at, ok := idx[r.ID]; ok {
+				if anchorModeRank(r.Mode) < anchorModeRank(out[at].Mode) {
+					out[at] = r
+				}
+				continue
+			}
+			idx[r.ID] = len(out)
+			out = append(out, r)
+		}
+	}
+	for _, ch := range []struct {
 		call func(context.Context, string, int) ([]cold.ScoredEntryRow, error)
 	}{
-		{"exact", v.SearchExact},
-		{"prefix", v.SearchPrefix},
-		{"fts", v.SearchFTS},
-		{"substr", v.SearchSubstring},
+		{v.SearchExact},
+		{v.SearchPrefix},
+		{v.SearchFTS},
 	} {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		got, err := mode.call(ctx, token, policy.search)
+		got, err := ch.call(ctx, token, policy.search)
 		if err != nil {
 			return nil, fmt.Errorf("methods: trace: resolve %q: %w", token, err)
 		}
-		if len(got) > 0 {
-			rows = got
-			break
-		}
+		merge(got)
 	}
+	// Substring is a full scan: only as a last resort for a sparse token.
+	if len(out) < traceMaxPerToken {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		got, err := v.SearchSubstring(ctx, token, policy.search)
+		if err != nil {
+			return nil, fmt.Errorf("methods: trace: resolve %q: %w", token, err)
+		}
+		merge(got)
+	}
+	if len(out) > policy.search {
+		sort.SliceStable(out, func(i, j int) bool {
+			return anchorModeRank(out[i].Mode) < anchorModeRank(out[j].Mode)
+		})
+		out = out[:policy.search]
+	}
+	return out, nil
+}
+
+// anchorFacts carries the cross-token signals ranking needs.
+type anchorFacts struct {
+	// coLoc maps a file to the number of distinct query tokens resolved there.
+	coLoc map[string]int
+	// callers is the incoming calls count per candidate.
+	callers map[model.EntryID]int
+	// globalStrong reports whether any file in the whole ask is corroborated.
+	globalStrong bool
+}
+
+// rankAnchorRows scores one token's candidates. A corroborated file (>=2 query
+// tokens landing in it) outranks a lone namesake; centrality and body size
+// then put a real definition ahead of an exact one-line wrapper.
+func rankAnchorRows(ctx context.Context, v *cold.Vault, token string, directed bool, rows []cold.ScoredEntryRow, policy anchorPolicy, pool map[string]struct{}, typeToks []string, lcTokens map[string]struct{}, fileCache map[string]map[string]struct{}, facts anchorFacts) ([]cold.ScoredEntryRow, error) {
 	if len(rows) == 0 {
 		return nil, nil
+	}
+	precise := isAskSymbol(token)
+	strong := make([]bool, len(rows))
+	for i, r := range rows {
+		s := precise || inAskTypedContext(r, typeToks) || vesselMentioned(r, pool) ||
+			facts.coLoc[r.FilePath] >= 2
+		// Bounded corroboration probe: only for a small bare-word candidate set.
+		if !s && !precise && len(lcTokens) >= 2 && len(rows) <= traceMaxPerToken*2 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			s = corroboratedAskFile(ctx, v, token, r.FilePath, lcTokens, fileCache)
+		}
+		strong[i] = s
+	}
+	// Bare-word pruning: once the ask has a corroborated cluster, an
+	// uncorroborated bare word ("folder" -> migrate.ts) is keyword noise, not
+	// a seed. Shape-precise tokens and single-token asks are never pruned.
+	if !directed && !precise && len(lcTokens) >= 2 && facts.globalStrong {
+		kept := rows[:0]
+		keptStrong := strong[:0]
+		for i, r := range rows {
+			if strong[i] {
+				kept = append(kept, r)
+				keptStrong = append(keptStrong, true)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, nil
+		}
+		rows, strong = kept, keptStrong
 	}
 	fold := strings.ToLower(token)
 	scored := make([]int, len(rows))
 	worth := make([]float64, len(rows))
 	typed := make([]bool, len(rows))
+	bodies := make([]int, len(rows))
+	callers := make([]int, len(rows))
+	glue := make([]bool, len(rows))
+	testy := make([]bool, len(rows))
+	terms := make([]int, len(rows))
 	for i, r := range rows {
 		switch {
 		case strings.EqualFold(r.Name, token):
@@ -241,6 +344,21 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 		}
 		worth[i] = askRankScore(r)
 		typed[i] = inAskTypedContext(r, typeToks)
+		bodies[i] = r.EndLine - r.StartLine
+		if bodies[i] < 0 {
+			bodies[i] = 0
+		}
+		callers[i] = facts.callers[r.ID]
+		glue[i] = isTraceGeneratedPath(r.FilePath)
+		testy[i] = isTraceTestPath(r.FilePath)
+		// Term hits are name-only: a local `manifestNotices` under
+		// discoverPlugins must not inherit "discover" from its qualified path.
+		hay := strings.ToLower(r.Name)
+		for t := range lcTokens {
+			if strings.Contains(hay, t) {
+				terms[i]++
+			}
+		}
 	}
 	idx := make([]int, len(rows))
 	for i := range idx {
@@ -248,8 +366,35 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 	}
 	sort.SliceStable(idx, func(a, b int) bool {
 		ia, ib := idx[a], idx[b]
+		// Generated bindings (wailsjs/models) can have huge fan-in; they are
+		// glue, so a hand-written symbol always outranks them.
+		if glue[ia] != glue[ib] {
+			return !glue[ia]
+		}
+		// Tests describe behavior; they are blast radius, not the thing asked
+		// about, so source anchors come first.
+		if testy[ia] != testy[ib] {
+			return !testy[ia]
+		}
+		// Symbols whose own name carries several ask terms ("discoverPlugins"
+		// for "plugin discover") are the intended target; a bare namesake
+		// ("Discover") is weaker than the compound definition. Name terms
+		// precede corroboration so a local `plugins` const inside discover()
+		// cannot outrank discoverPlugins.
+		if terms[ia] != terms[ib] {
+			return terms[ia] > terms[ib]
+		}
+		if strong[ia] != strong[ib] {
+			return strong[ia]
+		}
 		if scored[ia] != scored[ib] {
 			return scored[ia] < scored[ib]
+		}
+		if callers[ia] != callers[ib] {
+			return callers[ia] > callers[ib]
+		}
+		if bodies[ia] != bodies[ib] {
+			return bodies[ia] > bodies[ib]
 		}
 		if typed[ia] != typed[ib] {
 			return typed[ia] && !typed[ib]
@@ -267,36 +412,14 @@ func anchorToken(ctx context.Context, v *cold.Vault, token string, directed bool
 		ordered[i] = rows[j]
 	}
 	rows = ordered
-	if !directed && len(rows) > 3 {
-		var kept []cold.ScoredEntryRow
-		for _, r := range rows {
-			if vesselMentioned(r, pool) || inAskTypedContext(r, typeToks) {
-				kept = append(kept, r)
-			}
-		}
-		if len(kept) > 0 {
-			rows = kept
-		}
-	}
-	if !directed && !isAskSymbol(token) {
-		kept := make([]cold.ScoredEntryRow, 0, len(rows))
-		for _, r := range rows {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if corroboratedAskFile(ctx, v, token, r.FilePath, lcTokens, fileCache) {
-				kept = append(kept, r)
-			}
-		}
-		// Keep the corroborated set only when it still spans more than one
-		// directory; a single-area collapse would blind reach elsewhere.
-		if len(kept) > 0 && distinctAnchorBuckets(kept) >= 2 {
-			rows = kept
-		}
-	}
 	max := anchorPerToken(rows, policy)
 	if len(rows) > max {
 		rows = spreadByBucket(rows, max)
+	}
+	// Rank is the final display order; the render layer treats rank 0 as the
+	// confident anchor, so it must not stay at the search channel's rank.
+	for i := range rows {
+		rows[i].Rank = i
 	}
 	return rows, nil
 }
@@ -498,12 +621,14 @@ func (w *transportWalk) Neighbors(id model.EntryID, reverse bool) []transportHop
 func walkForward(ctx context.Context, v *cold.Vault, tw *transportWalk, seed model.EntryID, named map[model.EntryID]struct{}, maxNodes int) (map[model.EntryID]trailLink, []model.EntryID, error) {
 	parent := map[model.EntryID]trailLink{seed: {}}
 	type item struct {
-		id    model.EntryID
-		depth int
-		gaps  int
+		id      model.EntryID
+		depth   int
+		gaps    int
+		bridges int
 	}
 	queue := []item{{id: seed}}
 	var reached []model.EntryID
+	bridgeProbes := 0
 	for head := 0; head < len(queue) && len(parent) < traceVisitCap; head++ {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -521,13 +646,22 @@ func walkForward(ctx context.Context, v *cold.Vault, tw *transportWalk, seed mod
 		if err != nil {
 			return nil, nil, err
 		}
-		push := func(nid model.EntryID, kind string, site model.Range, cond string) {
+		push := func(nid model.EntryID, kind string, site model.Range, cond string, isCall bool) {
 			if _, seen := parent[nid]; seen {
 				return
 			}
 			gaps := cur.gaps
+			bridges := cur.bridges
+			if !isCall {
+				bridges++
+			}
+			if bridges > 1 {
+				return
+			}
 			if _, ok := named[nid]; ok {
-				gaps = 0
+				if isCall {
+					gaps = 0
+				}
 			} else {
 				gaps++
 			}
@@ -535,14 +669,31 @@ func walkForward(ctx context.Context, v *cold.Vault, tw *transportWalk, seed mod
 				return
 			}
 			parent[nid] = trailLink{prev: cur.id, edge: model.Edge{From: cur.id, To: nid, Kind: kind, SiteRange: site, Cond: cond}}
-			queue = append(queue, item{id: nid, depth: cur.depth + 1, gaps: gaps})
+			queue = append(queue, item{id: nid, depth: cur.depth + 1, gaps: gaps, bridges: bridges})
 		}
+		sawNamed := false
 		for _, ne := range nes {
-			push(ne.Ref.ID, ne.Kind, ne.Ref.SiteRange, ne.Ref.Cond)
+			if _, ok := named[ne.Ref.ID]; ok {
+				sawNamed = true
+			}
+			push(ne.Ref.ID, ne.Kind, ne.Ref.SiteRange, ne.Ref.Cond, true)
+		}
+		// A dead-end call branch may still reach a named symbol through a
+		// typed relationship (uses/param/return). At most one such bridge per
+		// trail, and a bounded number of probes per seed.
+		if !sawNamed && cur.bridges == 0 && bridgeProbes < traceBridgeProbeCap {
+			bridgeProbes++
+			bes, err := v.FetchNeighborEdges(ctx, cur.id, traceBridgeKinds, false)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, ne := range bes {
+				push(ne.Ref.ID, ne.Kind, ne.Ref.SiteRange, ne.Ref.Cond, false)
+			}
 		}
 		if tw != nil {
 			for _, h := range tw.Neighbors(cur.id, false) {
-				push(h.to, model.EdgeTransport, h.site, "")
+				push(h.to, model.EdgeTransport, h.site, "", true)
 			}
 		}
 	}
@@ -743,18 +894,76 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 		return TraceReport{}, err
 	}
 	policy := newAnchorPolicy(stats)
+	// Resolve every token before ranking any of them: co-location is a
+	// whole-ask signal (how many query tokens land in one file).
+	gathered := make(map[string][]cold.ScoredEntryRow, len(tokens))
+	fileTokens := make(map[string]map[string]struct{}, len(tokens))
+	// A file is corroborated when >=2 query tokens appear in its path or its
+	// matched symbols. Path terms matter: discover.plugin.ts corroborates
+	// "discover" + "plugin" even when only discoverPlugins was found there.
+	fileSet := func(filePath string) map[string]struct{} {
+		set := fileTokens[filePath]
+		if set != nil {
+			return set
+		}
+		set = make(map[string]struct{}, 2)
+		lowerPath := strings.ToLower(filePath)
+		for _, t := range tokens {
+			if strings.Contains(lowerPath, strings.ToLower(t)) {
+				set[t] = struct{}{}
+			}
+		}
+		fileTokens[filePath] = set
+		return set
+	}
+	var candidateIDs []model.EntryID
+	seenCandidate := make(map[model.EntryID]struct{})
+	for _, t := range tokens {
+		if err := ctx.Err(); err != nil {
+			return TraceReport{}, err
+		}
+		rows, err := gatherAnchorRows(ctx, v, t, policy)
+		if err != nil {
+			return TraceReport{}, err
+		}
+		gathered[t] = rows
+		for _, r := range rows {
+			fileSet(r.FilePath)[t] = struct{}{}
+			if _, ok := seenCandidate[r.ID]; !ok {
+				seenCandidate[r.ID] = struct{}{}
+				candidateIDs = append(candidateIDs, r.ID)
+			}
+		}
+	}
+	coLoc := make(map[string]int, len(fileTokens))
+	globalStrong := false
+	for f, set := range fileTokens {
+		coLoc[f] = len(set)
+		if len(set) >= 2 {
+			globalStrong = true
+		}
+	}
+	callers, err := v.CountCallersBatch(ctx, candidateIDs)
+	if err != nil {
+		return TraceReport{}, err
+	}
+	facts := anchorFacts{coLoc: coLoc, callers: callers, globalStrong: globalStrong}
+
 	anchorRows := make(map[string][]cold.ScoredEntryRow, len(tokens))
 	named := make(map[model.EntryID]struct{})
 	for _, t := range tokens {
 		if err := ctx.Err(); err != nil {
 			return TraceReport{}, err
 		}
-		rows, err := anchorToken(ctx, v, t, directed, policy, pool, typeToks, lcTokens, fileCache)
+		rows, err := rankAnchorRows(ctx, v, t, directed, gathered[t], policy, pool, typeToks, lcTokens, fileCache, facts)
 		if err != nil {
 			return TraceReport{}, err
 		}
 		anchorRows[t] = rows
-		for _, r := range rows {
+	}
+buildHits:
+	for _, t := range tokens {
+		for _, r := range anchorRows[t] {
 			named[r.ID] = struct{}{}
 			hit := model.SearchHit{
 				ID:        r.ID,
@@ -780,7 +989,7 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 			}
 			rep.Anchors[t] = append(rep.Anchors[t], hit)
 			if len(named) >= traceMaxAnchors {
-				break
+				break buildHits
 			}
 		}
 	}
@@ -794,9 +1003,16 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 	}
 	var trails []Trail
 	if directed {
-		fromRows := anchorRows[ask.From]
-		toIDs := make(map[model.EntryID]struct{}, len(anchorRows[ask.To]))
-		for _, r := range anchorRows[ask.To] {
+		// From/To may differ only in case from the query token that resolved
+		// them; look both ends up case-insensitively.
+		anchorByFold := make(map[string][]cold.ScoredEntryRow, len(anchorRows))
+		for t, rows := range anchorRows {
+			anchorByFold[strings.ToLower(t)] = rows
+		}
+		fromRows := anchorByFold[strings.ToLower(ask.From)]
+		toRows := anchorByFold[strings.ToLower(ask.To)]
+		toIDs := make(map[model.EntryID]struct{}, len(toRows))
+		for _, r := range toRows {
 			toIDs[r.ID] = struct{}{}
 		}
 		if len(fromRows) > 0 && len(toIDs) > 0 {
@@ -813,11 +1029,29 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 			sort.Slice(trails, func(i, j int) bool { return len(trails[i].Steps) < len(trails[j].Steps) })
 		}
 	} else if len(named) >= 2 {
+		// Seed the walk from the best-ranked anchors, not alphabetically: a
+		// dead one-line match must not spend the seed budget.
+		seedRank := make(map[model.EntryID]int, len(named))
+		for _, t := range tokens {
+			for i, r := range anchorRows[t] {
+				if _, ok := seedRank[r.ID]; !ok {
+					seedRank[r.ID] = i
+				}
+			}
+		}
 		var seeds []model.EntryID
 		for id := range named {
 			seeds = append(seeds, id)
 		}
-		sort.Slice(seeds, func(i, j int) bool { return seeds[i] < seeds[j] })
+		sort.Slice(seeds, func(i, j int) bool {
+			if seedRank[seeds[i]] != seedRank[seeds[j]] {
+				return seedRank[seeds[i]] < seedRank[seeds[j]]
+			}
+			if callers[seeds[i]] != callers[seeds[j]] {
+				return callers[seeds[i]] > callers[seeds[j]]
+			}
+			return seeds[i] < seeds[j]
+		})
 		if len(seeds) > traceMaxSeeds {
 			seeds = seeds[:traceMaxSeeds]
 		}
@@ -842,6 +1076,28 @@ func Trace(ctx context.Context, v *cold.Vault, ask TraceAsk) (TraceReport, error
 			}
 		}
 		sort.Slice(trails, func(i, j int) bool { return len(trails[i].Steps) > len(trails[j].Steps) })
+	}
+	// Prefer trails that contain the best anchor for some token; a chain of
+	// local consts ("stat -> file") is reach, not the asked-about path.
+	primary := make(map[model.EntryID]struct{}, len(tokens))
+	for _, t := range tokens {
+		if rows := anchorRows[t]; len(rows) > 0 {
+			primary[rows[0].ID] = struct{}{}
+		}
+	}
+	if len(primary) > 0 && len(trails) > 0 {
+		kept := trails[:0]
+		for _, tr := range trails {
+			for _, id := range tr.Steps {
+				if _, ok := primary[id]; ok {
+					kept = append(kept, tr)
+					break
+				}
+			}
+		}
+		if len(kept) > 0 {
+			trails = kept
+		}
 	}
 	rep.Trails = keepDistinctTrails(trails, ask.MaxTrails)
 

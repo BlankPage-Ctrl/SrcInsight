@@ -14,6 +14,10 @@ var GeneratedSuffixes = []string{
 // GeneratedInfixes are name substrings marking generated trees.
 var GeneratedInfixes = []string{
 	"__generated__",
+	"wailsjs/",
+	"/generated/",
+	".generated.",
+	"/gen/",
 }
 
 // IsGeneratedPath reports generated/ambient declaration paths by name alone.
