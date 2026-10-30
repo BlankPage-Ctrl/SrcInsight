@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"srcinsight/internal/storage/cold"
+	"srcinsight/services/adapters"
 	"srcinsight/services/shared"
 )
 
@@ -27,10 +28,8 @@ func (p *Pipeline) TryFullScan(ctx context.Context, force bool) (SyncResult, boo
 // fullScanLocked needs p.mu held; FullScan, TryFullScan, and syncLocked lock it.
 func (p *Pipeline) fullScanLocked(ctx context.Context, force bool) (SyncResult, error) {
 
-	// Drop alias caches so edited configs re-read lazily during this run.
-	p.tsAlias.InvalidateAll()
-	p.ws.Invalidate()
-	p.goMods.InvalidateAll()
+	// Drop resolver caches so edited configs re-read lazily during this run.
+	p.langs.InvalidateAll()
 
 	var res SyncResult
 	if !force {
@@ -135,14 +134,12 @@ func (p *Pipeline) fullScanLocked(ctx context.Context, force bool) (SyncResult, 
 			return res, err
 		}
 		// DI reverse promotes loose ends bound to freshly indexed types.
-		if err := p.promoteDIReverse(ctx, bundles); err != nil {
+		if err := p.langs.Reverse(ctx, p, bundles, adapters.ReverseLanguage); err != nil {
 			return res, err
 		}
-		// Recv reverse runs only when SRCINSIGHT_RECV enables it.
-		if recvReverseEnabled() {
-			if err := p.promoteRecvReverse(ctx, bundles); err != nil {
-				return res, err
-			}
+		// Recv reverse is gated by SRCINSIGHT_RECV inside the pass.
+		if err := p.langs.Reverse(ctx, p, bundles, adapters.ReverseRecv); err != nil {
+			return res, err
 		}
 	}
 	phaseMark("commit")

@@ -6,6 +6,7 @@ import (
 
 	"srcinsight/internal/model"
 	"srcinsight/internal/storage/cold"
+	"srcinsight/services/adapters"
 	"srcinsight/services/shared"
 )
 
@@ -43,10 +44,8 @@ func (p *Pipeline) syncLocked(ctx context.Context, hints []string) (SyncResult, 
 		return p.fullScanLocked(ctx, true)
 	}
 
-	// Drop alias caches so edited configs re-read lazily.
-	p.tsAlias.InvalidateAll()
-	p.ws.Invalidate()
-	p.goMods.InvalidateAll()
+	// Drop resolver caches so edited configs re-read lazily.
+	p.langs.InvalidateAll()
 
 	var disk []shared.DiskFile
 	var hintMode bool
@@ -200,11 +199,9 @@ func (p *Pipeline) syncLocked(ctx context.Context, hints []string) (SyncResult, 
 		if err := p.promoteReverseCross(ctx, bundles); err != nil {
 			return res, err
 		}
-		// Recv reverse runs only when SRCINSIGHT_RECV enables it.
-		if recvReverseEnabled() {
-			if err := p.promoteRecvReverse(ctx, bundles); err != nil {
-				return res, err
-			}
+		// Reversed DI is intentionally skipped here; behavior is unchanged.
+		if err := p.langs.Reverse(ctx, p, bundles, adapters.ReverseRecv); err != nil {
+			return res, err
 		}
 	}
 	res.Added = len(added)
@@ -259,7 +256,7 @@ func (p *Pipeline) collectHints(ctx context.Context, hints []string) ([]shared.D
 			return nil, err
 		}
 		// Replicate Walk filtering without a DirEntry.
-		if !IsSourceFile(rel) {
+		if !adapters.IsSourceFile(rel) {
 			// Non-source paths still need a removal check when tracked.
 			if _, found, _ := p.vault.FetchOrigin(ctx, rel); !found {
 				continue

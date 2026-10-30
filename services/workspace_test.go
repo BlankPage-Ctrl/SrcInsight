@@ -58,15 +58,16 @@ func TestWorkspaceCandidatePaths(t *testing.T) {
 	writeWS(t, dir)
 	p, _ := testPipelineAt(t, dir)
 	defer p.Close()
-	got := p.ws.CandidatePaths("pkg")
+	got := p.langs.ResolverFor(model.LangTypeScript).CandidatePaths("packages/app/main.ts", "pkg")
 	if len(got) == 0 || got[0] != "packages/pkg/src/index.ts" {
 		t.Fatalf("workspace candidates = %v, want packages/pkg/src/index.ts first", got)
 	}
-	if !p.ws.IsInternal("pkg") || p.ws.IsInternal("lodash") {
-		t.Fatalf("IsInternal wrong: pkg=%v lodash=%v", p.ws.IsInternal("pkg"), p.ws.IsInternal("lodash"))
+	internal := p.langs.InternalSourceFor("packages/app/main.ts")
+	if !internal("pkg") || internal("lodash") {
+		t.Fatalf("IsInternal wrong: pkg=%v lodash=%v", internal("pkg"), internal("lodash"))
 	}
-	if p.ws.IsInternal("./rel") {
-		t.Fatal("relative source must not be workspace-internal")
+	if !internal("./rel") {
+		t.Fatal("relative source must be internal")
 	}
 }
 

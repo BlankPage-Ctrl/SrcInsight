@@ -147,10 +147,7 @@ func (p *Pipeline) resolveShardForward(ctx context.Context, bundles []cold.Origi
 			return err
 		}
 	}
-	if err := p.resolveGoPackageBatch(ctx, sub, pending, bundleImports, lc); err != nil {
-		return err
-	}
-	if err := p.resolveDIBatch(ctx, sub, pending, lc); err != nil {
+	if err := p.langs.ForwardShard(ctx, p, sub, pending, bundleImports, lc); err != nil {
 		return err
 	}
 	copyBack(bundles, idx, sub)
@@ -179,7 +176,7 @@ func shouldChunkCommit(bundles []cold.OriginBundle) bool {
 // commitBulkChunked resolves with budgeted workers then flushes per threshold.
 func (p *Pipeline) commitBulkChunked(ctx context.Context, bundles []OriginBundleAlias, fresh bool) error {
 	total := countRefs(bundles)
-	budget := computeResolveBudget(total, len(bundles), p.reg.Size())
+	budget := computeResolveBudget(total, len(bundles), p.pool.Size())
 	if os.Getenv("SRCINSIGHT_RESOLVE_TIMINGS") == "1" {
 		fmt.Fprintf(os.Stderr, "[budget] refs=%d workers=%d refsPerWorker=%d flush=%d\n",
 			total, budget.workers, budget.refsPerWorker, budget.flushThreshold)
@@ -218,12 +215,12 @@ func (p *Pipeline) commitBulkChunked(ctx context.Context, bundles []OriginBundle
 			return err
 		}
 	}
-	if recvForwardEnabled() {
+	if p.langs.HasRecvShard() {
 		for w := range errs {
 			errs[w] = nil
 		}
 		runJobs(ctx, len(shards), len(shards), func(w int) {
-			errs[w] = p.resolveRecvShard(ctx, bundles, shards[w], pending, shared.Clone())
+			errs[w] = p.langs.RecvShard(ctx, p, bundles, shards[w], pending, shared.Clone())
 		})
 		if err := ctx.Err(); err != nil {
 			return err

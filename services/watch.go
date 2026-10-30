@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"srcinsight/internal/watch"
+	"srcinsight/services/adapters"
 )
 
 // SyncChanged runs Sync and returns the watch payload; it fires OnSync when set.
@@ -85,7 +86,7 @@ func (p *Pipeline) WatchOptions() watch.Options {
 		HintBudget:    watch.HintBudget,
 		IsIgnoredDir:  ignoredDir,
 		IsIgnoredFile: ignoredFile,
-		IsSourceFile:  IsSourceFile,
+		IsSourceFile:  adapters.IsSourceFile,
 		HintedSync:    p.SyncWithHintsChanged,
 	}
 }

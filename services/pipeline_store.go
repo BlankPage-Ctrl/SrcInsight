@@ -15,7 +15,7 @@ var _ resolve.Store = (*Pipeline)(nil)
 
 // ResolverFor returns the alias-bound resolver per dialect, or stateless when unconfigured.
 func (p *Pipeline) ResolverFor(lang model.Language) resolve.ImportResolver {
-	return p.resolverFor(lang)
+	return p.langs.ResolverFor(lang)
 }
 
 // FetchTracked reads tracked origins.

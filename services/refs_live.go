@@ -2,11 +2,11 @@ package services
 
 import (
 	"context"
-	"path"
 	"strings"
 
 	"srcinsight/internal/model"
 	"srcinsight/internal/storage/cold"
+	"srcinsight/services/adapters"
 	"srcinsight/services/methods"
 	"srcinsight/services/resolve"
 )
@@ -22,7 +22,7 @@ func (p *Pipeline) VerifyRefs(ctx context.Context, target cold.EntryRow, loose [
 	if len(loose) == 0 {
 		return nil, nil
 	}
-	resolver := p.resolverFor(target.Dialect)
+	resolver := p.langs.ResolverFor(target.Dialect)
 	if resolver == nil {
 		return nil, nil
 	}
@@ -67,8 +67,10 @@ func (p *Pipeline) VerifyRefs(ctx context.Context, target cold.EntryRow, loose [
 // file. Go plain names are same-package and need a matching directory instead
 // of an import.
 func refImportsTarget(target cold.EntryRow, le cold.LooseEndRow, recv string, byLocal map[string][]cold.ImportRow, resolver resolve.ImportResolver, lc *resolve.LookupCache) bool {
-	if target.Dialect == model.LangGo && recv == "" {
-		return path.Dir(le.FilePath) == path.Dir(target.FilePath)
+	if l := adapters.Get(target.Dialect); l != nil && l.RefWithoutImport != nil {
+		if handled, ok := l.RefWithoutImport(target.FilePath, le, recv); handled {
+			return ok
+		}
 	}
 	probe := le.Name
 	if recv != "" {

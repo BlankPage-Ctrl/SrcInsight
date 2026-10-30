@@ -87,31 +87,6 @@ func TestDIChainPythonUntouched(t *testing.T) {
 	}
 }
 
-func TestSplitThisChain(t *testing.T) {
-	cases := []struct {
-		in          string
-		field, meth string
-		ok          bool
-	}{
-		{"this.svc.findAll", "svc", "findAll", true},
-		{"self.svc.findAll", "svc", "findAll", true},
-		{"this.a.b.c", "a", "c", true},
-		{"this.help", "", "", false},
-		{"self.help", "", "", false},
-		{"svc.findAll", "", "", false},
-		{"findAll", "", "", false},
-		{"this..findAll", "", "", false},
-		{"this.svc.", "", "", false},
-	}
-	for _, c := range cases {
-		f, m, ok := splitThisChain(c.in)
-		if f != c.field || m != c.meth || ok != c.ok {
-			t.Errorf("splitThisChain(%q) = (%q,%q,%v), want (%q,%q,%v)",
-				c.in, f, m, ok, c.field, c.meth, c.ok)
-		}
-	}
-}
-
 // --- e2e: batch forward + reverse over real pipeline ---
 
 const diServiceSrc = `export class CatsService {

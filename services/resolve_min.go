@@ -3,10 +3,9 @@ package services
 import (
 	"strings"
 
-	"srcinsight/internal/convention"
 	"srcinsight/internal/model"
 	"srcinsight/internal/storage/cold"
-	tspkg "srcinsight/services/resolve/ts"
+	"srcinsight/services/adapters"
 )
 
 // ResolveFile splits one file's refs into same-file links vs loose ends.
@@ -38,8 +37,12 @@ func ResolveFileWithAlias(
 	// Index imports once so scope classification stays O(1) per ref.
 	byLocal := indexImports(imports)
 
-	// ctorBinds maps constructor param types so this-chains skip self matches.
-	ctorBinds := tspkg.BuildCtorBinds(fns)
+	// Language-private state lets this-chains skip self matches.
+	lang := adapters.Get(dialect)
+	var prep adapters.Prep
+	if lang != nil && lang.PrepareSameFile != nil {
+		prep = lang.PrepareSameFile(fns)
+	}
 
 	seenLink := make(map[cold.LinkRow]struct{}, len(fns))
 	links = make([]cold.LinkRow, 0, len(fns))
@@ -92,9 +95,8 @@ func ResolveFileWithAlias(
 				}
 			case recv == "self" || recv == "this":
 				// Chained this-calls never fall back to the caller's container.
-				if dialect == model.LangTypeScript {
-					if field, method, ok := tspkg.SplitThisChain(c.Name); ok {
-						targets := tspkg.DIChainTargets(f, byName, ctorBinds, field, method)
+				if lang != nil && lang.SameFileCall != nil {
+					if targets, handled := lang.SameFileCall(prep, f, c.Name, byName); handled {
 						if len(targets) == 0 {
 							addLoose(f.ID, c.Name, model.EdgeCalls, model.ScopeUnresolved, c.SiteRange, c.Cond)
 							continue
@@ -174,34 +176,6 @@ func sameContainer(caller *model.Function, cands []*model.Function) []*model.Fun
 	return out
 }
 
-// resolveHeritage links heritage refs to same-file type nodes or loose ends.
-func resolveHeritage(
-	from model.EntryID,
-	name, kind, path string,
-	dialect model.Language,
-	byName map[string][]*model.Function,
-	imports []model.ImportStmt,
-	addLink func(model.EntryID, model.EntryID, string, model.Range, string),
-	addLoose func(model.EntryID, string, string, string, model.Range, string),
-) {
-	resolveHeritageWithAlias(from, name, kind, path, dialect, byName, imports, nil, addLink, addLoose, model.Range{})
-}
-
-// resolveHeritageWithAlias threads alias awareness into scope classification.
-func resolveHeritageWithAlias(
-	from model.EntryID,
-	name, kind, path string,
-	dialect model.Language,
-	byName map[string][]*model.Function,
-	imports []model.ImportStmt,
-	isInternal func(source string) bool,
-	addLink func(model.EntryID, model.EntryID, string, model.Range, string),
-	addLoose func(model.EntryID, string, string, string, model.Range, string),
-	site model.Range,
-) {
-	resolveHeritageIndexed(from, name, kind, path, dialect, byName, imports, nil, isInternal, addLink, addLoose, site)
-}
-
 // resolveHeritageIndexed uses a prebuilt import index when non-nil.
 func resolveHeritageIndexed(
 	from model.EntryID,
@@ -233,33 +207,6 @@ func resolveHeritageIndexed(
 	}
 }
 
-// resolveTypeRef links type refs to same-file type nodes or loose ends.
-func resolveTypeRef(
-	from model.EntryID,
-	name, kind, path string,
-	dialect model.Language,
-	byName map[string][]*model.Function,
-	imports []model.ImportStmt,
-	addLink func(model.EntryID, model.EntryID, string, model.Range, string),
-	addLoose func(model.EntryID, string, string, string, model.Range, string),
-) {
-	resolveTypeRefWithAlias(from, name, kind, path, dialect, byName, imports, nil, addLink, addLoose, model.Range{})
-}
-
-func resolveTypeRefWithAlias(
-	from model.EntryID,
-	name, kind, path string,
-	dialect model.Language,
-	byName map[string][]*model.Function,
-	imports []model.ImportStmt,
-	isInternal func(source string) bool,
-	addLink func(model.EntryID, model.EntryID, string, model.Range, string),
-	addLoose func(model.EntryID, string, string, string, model.Range, string),
-	site model.Range,
-) {
-	resolveTypeRefIndexed(from, name, kind, path, dialect, byName, imports, nil, isInternal, addLink, addLoose, site)
-}
-
 // resolveTypeRefIndexed uses a prebuilt import index when non-nil.
 func resolveTypeRefIndexed(
 	from model.EntryID,
@@ -289,21 +236,6 @@ func resolveTypeRefIndexed(
 	for _, t := range targets {
 		addLink(from, t.ID, kind, site, "")
 	}
-}
-
-// resolveUsesWithAlias links const deps to any same-file node or loose ends.
-func resolveUsesWithAlias(
-	from model.EntryID,
-	name, kind, path string,
-	dialect model.Language,
-	byName map[string][]*model.Function,
-	imports []model.ImportStmt,
-	isInternal func(source string) bool,
-	addLink func(model.EntryID, model.EntryID, string, model.Range, string),
-	addLoose func(model.EntryID, string, string, string, model.Range, string),
-	site model.Range,
-) {
-	resolveUsesIndexed(from, name, kind, path, dialect, byName, imports, nil, isInternal, addLink, addLoose, site)
 }
 
 // resolveUsesIndexed uses a prebuilt import index when non-nil.
@@ -341,16 +273,6 @@ func resolveUsesIndexed(
 	for _, t := range targets {
 		addLink(from, t.ID, kind, site, "")
 	}
-}
-
-// classifyScope labels unresolved refs without touching the vault.
-func classifyScope(fullName, recv string, imports []model.ImportStmt, dialect model.Language) string {
-	return classifyScopeWithAlias(fullName, recv, imports, dialect, nil)
-}
-
-// classifyScopeWithAlias labels alias-internal sources as internal.
-func classifyScopeWithAlias(fullName, recv string, imports []model.ImportStmt, dialect model.Language, isInternal func(source string) bool) string {
-	return classifyScopeIndexed(fullName, recv, imports, nil, dialect, isInternal)
 }
 
 // indexedImp pairs an import with its file order.
@@ -420,7 +342,7 @@ func classifyScopeIndexed(fullName, recv string, imports []model.ImportStmt, byL
 			return model.ExternalScope(moduleOf(imp.Source))
 		}
 	}
-	if isRuntimeBuiltin(recv, probe, dialect) {
+	if lang := adapters.Get(dialect); lang != nil && lang.IsBuiltin != nil && lang.IsBuiltin(recv, probe) {
 		return model.ScopeRuntime
 	}
 	return model.ScopeUnresolved
@@ -442,13 +364,4 @@ func moduleOf(source string) string {
 		return source[:i]
 	}
 	return source
-}
-
-var pyBuiltins = convention.PyBuiltins
-
-var tsBuiltins = convention.TSBuiltins
-
-// isRuntimeBuiltin checks the shared builtin convention.
-func isRuntimeBuiltin(recv, probe string, dialect model.Language) bool {
-	return convention.IsRuntimeBuiltin(recv, probe, dialect)
 }

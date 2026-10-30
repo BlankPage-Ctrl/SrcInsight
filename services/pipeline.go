@@ -8,8 +8,7 @@ import (
 	"srcinsight/internal/filesystem"
 	"srcinsight/internal/storage/cold"
 	"srcinsight/internal/watch"
-	goresolve "srcinsight/services/resolve/go"
-	tspkg "srcinsight/services/resolve/ts"
+	"srcinsight/services/adapters"
 )
 
 // ExtractorVersion forces a full rescan when extractor output changes shape.
@@ -32,15 +31,10 @@ type Pipeline struct {
 	rootPath string
 	root     *filesystem.Root
 	ignore   *filesystem.Ignore
-	reg      *Registry
+	pool     *adapters.Pool
+	langs    *adapters.Set
 	vault    *cold.Vault
 	dbPath   string
-	// tsAlias caches per-directory tsconfig paths; nil means relative-only.
-	tsAlias *tspkg.Resolver
-	// ws maps workspace package names to dirs; nil resolves nothing.
-	ws *tspkg.Workspace
-	// goMods caches per-directory go.mod lookups for module-aware Go resolution.
-	goMods *goresolve.ModResolver
 
 	// OnSync fires after watcher Sync runs; it must be goroutine-safe.
 	OnSync func(SyncResult)
@@ -82,12 +76,10 @@ func NewWithOptions(opts PipelineOptions) (*Pipeline, error) {
 		rootPath: root.Base(),
 		root:     root,
 		ignore:   filesystem.Load(root.Base()),
-		reg:      NewRegistry(),
+		pool:     adapters.NewPool(),
+		langs:    adapters.NewSet(root),
 		vault:    vault,
 		dbPath:   dbPath,
-		tsAlias:  tspkg.New(root),
-		ws:       tspkg.NewWorkspace(root),
-		goMods:   goresolve.New(root),
 	}, nil
 }
 
@@ -101,12 +93,10 @@ func newForTest(root *filesystem.Root, vault *cold.Vault) *Pipeline {
 		rootPath: root.Base(),
 		root:     root,
 		ignore:   filesystem.Load(root.Base()),
-		reg:      NewRegistry(),
+		pool:     adapters.NewPool(),
+		langs:    adapters.NewSet(root),
 		vault:    vault,
 		dbPath:   dbPath,
-		tsAlias:  tspkg.New(root),
-		ws:       tspkg.NewWorkspace(root),
-		goMods:   goresolve.New(root),
 	}
 }
 
@@ -125,7 +115,7 @@ func (p *Pipeline) sourceFilter() filesystem.Filter {
 		if d != nil && d.IsDir() {
 			return p.ignore.IgnoredDir(relSlash)
 		}
-		if !IsSourceFile(relSlash) {
+		if !adapters.IsSourceFile(relSlash) {
 			return true
 		}
 		return p.ignore.IgnoredFile(relSlash)

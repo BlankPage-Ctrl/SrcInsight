@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"srcinsight/internal/storage/cold"
+	"srcinsight/services/adapters"
 )
 
 // Bulk recipe tuning from calibration: the bulk window rebuilds secondary
@@ -61,17 +62,10 @@ func (p *Pipeline) commitBulk(ctx context.Context, bundles []OriginBundleAlias, 
 		return err
 	}
 
-	if err := p.promoteDIReverse(ctx, bundles); err != nil {
+	if err := p.langs.Reverse(ctx, p, bundles, adapters.ReverseLanguage); err != nil {
 		return err
 	}
-	// Recv reverse runs only when SRCINSIGHT_RECV enables it.
-	if !recvReverseEnabled() {
-		return nil
-	}
-	if err := p.promoteRecvReverse(ctx, bundles); err != nil {
-		return err
-	}
-	return nil
+	return p.langs.Reverse(ctx, p, bundles, adapters.ReverseRecv)
 }
 
 // OriginBundleAlias is exactly cold.OriginBundle.

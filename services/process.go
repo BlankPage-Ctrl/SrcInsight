@@ -4,16 +4,10 @@ import (
 	"context"
 	"sync"
 
-	sitter "github.com/tree-sitter/go-tree-sitter"
-
-	"srcinsight/internal/convention"
-	"srcinsight/internal/extract/frontend"
-	goextract "srcinsight/internal/extract/go"
-	pyextract "srcinsight/internal/extract/python"
-	tsextract "srcinsight/internal/extract/typescript"
 	"srcinsight/internal/indexer"
 	"srcinsight/internal/model"
 	"srcinsight/internal/storage/cold"
+	"srcinsight/services/adapters"
 	"srcinsight/services/shared"
 )
 
@@ -67,7 +61,7 @@ func (p *Pipeline) processFiles(ctx context.Context, files []shared.DiskFile) (b
 	}
 	out := make([]outcome, len(files))
 
-	runJobs(ctx, len(files), p.reg.Size(), func(i int) {
+	runJobs(ctx, len(files), p.pool.Size(), func(i int) {
 		b, f, skip := p.processOne(files[i])
 		out[i] = outcome{bundle: b, fault: f, has: !skip && !isZeroBundle(b), isBad: !skip && !isZeroBundle(f), skip: skip}
 	})
@@ -104,7 +98,7 @@ type rawFile struct {
 // readRaws reads and hashes files in parallel without parsing.
 func (p *Pipeline) readRaws(ctx context.Context, files []shared.DiskFile) ([]rawFile, error) {
 	out := make([]rawFile, len(files))
-	runJobs(ctx, len(files), p.reg.Size(), func(i int) {
+	runJobs(ctx, len(files), p.pool.Size(), func(i int) {
 		out[i] = p.readRaw(files[i])
 	})
 	if err := ctx.Err(); err != nil {
@@ -123,7 +117,7 @@ func (p *Pipeline) buildBundles(ctx context.Context, raws []rawFile) (bundles, f
 		skip   bool
 	}
 	out := make([]outcome, len(raws))
-	runJobs(ctx, len(raws), p.reg.Size(), func(i int) {
+	runJobs(ctx, len(raws), p.pool.Size(), func(i int) {
 		b, f, skip := p.buildBundle(raws[i])
 		out[i] = outcome{bundle: b, fault: f, has: !skip && !isZeroBundle(b), isBad: !skip && !isZeroBundle(f), skip: skip}
 	})
@@ -156,7 +150,7 @@ func (p *Pipeline) readRaw(df shared.DiskFile) rawFile {
 		}
 		return rawFile{df: df, skip: true}
 	}
-	if _, ok := LanguageOf(df.Rel); !ok {
+	if _, ok := adapters.Lookup(df.Rel); !ok {
 		return rawFile{df: df, skip: true}
 	}
 	return rawFile{df: df, src: src, hash: shared.HashBytes(src)}
@@ -170,13 +164,13 @@ func (p *Pipeline) buildBundle(r rawFile) (bundle, fault cold.OriginBundle, skip
 	if r.bad {
 		return cold.OriginBundle{}, r.fault, false
 	}
-	lang, ok := LanguageOf(r.df.Rel)
+	lang, ok := adapters.Lookup(r.df.Rel)
 	if !ok {
 		return cold.OriginBundle{}, cold.OriginBundle{}, true
 	}
-	fe, xerr := p.extract(r.df.Rel, lang, r.src)
+	fe, xerr := lang.Extract(p.pool, r.df.Rel, r.src)
 	if xerr != nil {
-		return cold.OriginBundle{}, shared.FaultBundle(r.df, lang, r.hash, []string{xerr.Error()}), false
+		return cold.OriginBundle{}, shared.FaultBundle(r.df, lang.Dialect, r.hash, []string{xerr.Error()}), false
 	}
 
 	res := indexer.Index([]model.FileExtract{fe})
@@ -190,7 +184,7 @@ func (p *Pipeline) buildBundle(r rawFile) (bundle, fault cold.OriginBundle, skip
 	for _, f := range fns {
 		entries = append(entries, cold.EntryRowOf(f, fe.Language))
 	}
-	links, loose := ResolveFileWithAlias(r.df.Rel, fns, imports, fe.Language, p.isInternalSource(r.df.Rel))
+	links, loose := ResolveFileWithAlias(r.df.Rel, fns, imports, fe.Language, p.langs.InternalSourceFor(r.df.Rel))
 	var impRows []cold.ImportRow
 	for _, imp := range imports {
 		impRows = append(impRows, cold.ImportRowOf(r.df.Rel, imp))
@@ -222,102 +216,4 @@ func (p *Pipeline) buildBundle(r rawFile) (bundle, fault cold.OriginBundle, skip
 		Endpoints: endpoints,
 		Calls:     calls,
 	}, cold.OriginBundle{}, false
-}
-
-// extract parses src with a pooled parser and runs the language extractor.
-func (p *Pipeline) extract(rel string, lang model.Language, src []byte) (model.FileExtract, error) {
-	switch lang {
-	case model.LangTypeScript:
-		if convention.IsVueFile(rel) {
-			return p.extractVue(rel, src)
-		}
-		var fe model.FileExtract
-		err := p.reg.ParseTSFile(rel, src, func(tree *sitter.Tree) error {
-			var xerr error
-			fe, xerr = tsextract.Extract(rel, src, tree)
-			return xerr
-		})
-		if err != nil {
-			return model.FileExtract{}, err
-		}
-		return fe, nil
-	case model.LangPython:
-		var fe model.FileExtract
-		err := p.reg.Parse(lang, src, func(tree *sitter.Tree) error {
-			var xerr error
-			fe, xerr = pyextract.Extract(rel, src, tree)
-			return xerr
-		})
-		if err != nil {
-			return model.FileExtract{}, err
-		}
-		return fe, nil
-	case model.LangGo:
-		var fe model.FileExtract
-		err := p.reg.Parse(lang, src, func(tree *sitter.Tree) error {
-			var xerr error
-			fe, xerr = goextract.Extract(rel, src, tree)
-			return xerr
-		})
-		if err != nil {
-			return model.FileExtract{}, err
-		}
-		return fe, nil
-	default:
-		return model.FileExtract{}, errUnsupported(lang)
-	}
-}
-
-// Each <script> block parses under a synthetic path so queries match the parser grammar.
-func (p *Pipeline) extractVue(rel string, src []byte) (model.FileExtract, error) {
-	sfc := frontend.Split(src)
-	comp := convention.VueComponentName(rel)
-	var fe model.FileExtract
-	fe.Path = rel
-	fe.Language = model.LangTypeScript
-	for _, sb := range sfc.Scripts {
-		if len(sb.Content) == 0 {
-			continue
-		}
-		synth := rel + sb.ParserExt
-		err := p.reg.ParseTSFile(synth, sb.Content, func(tree *sitter.Tree) error {
-			sfe, xerr := tsextract.Extract(synth, sb.Content, tree)
-			if xerr != nil {
-				return xerr
-			}
-			frontend.ShiftLines(&sfe, sb.StartLine-1, rel)
-			fe.Functions = append(fe.Functions, sfe.Functions...)
-			fe.Imports = append(fe.Imports, sfe.Imports...)
-			fe.RecvBindings = append(fe.RecvBindings, sfe.RecvBindings...)
-			fe.Endpoints = append(fe.Endpoints, sfe.Endpoints...)
-			fe.Calls = append(fe.Calls, sfe.Calls...)
-			return nil
-		})
-		if err != nil {
-			return model.FileExtract{}, err
-		}
-	}
-	fe.Imports = frontend.DedupeImports(fe.Imports)
-	frontend.AttachComponent(&fe, comp)
-	refs := templateRefsOf(rel, src)
-	if len(refs) > 0 || len(fe.Functions) == 0 {
-		if comp != "" {
-			fe.Functions = append(fe.Functions, frontend.SyntheticRoot(rel, comp, refs))
-		}
-	}
-	return fe, nil
-}
-
-// templateRefsOf reads template bindings through the matching plugin.
-// Files without a Templater (plain scripts) yield nothing.
-func templateRefsOf(rel string, src []byte) []model.FunctionRef {
-	pl, ok := frontend.ForFile(rel)
-	if !ok {
-		return nil
-	}
-	tmpl, ok := pl.(frontend.Templater)
-	if !ok {
-		return nil
-	}
-	return tmpl.TemplateRefs(rel, src)
 }

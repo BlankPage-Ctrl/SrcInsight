@@ -1,4 +1,4 @@
-package services
+package adapters
 
 import (
 	"context"
@@ -11,6 +11,14 @@ import (
 )
 
 // Go same-package scope shares one directory with no import; this pass keys on dir plus package.
+
+func goPackageForward(ctx context.Context, s resolve.Store, bundles []cold.OriginBundle, pending resolve.Pending, bundleImports map[string][]cold.ImportRow, lc *resolve.LookupCache) error {
+	return resolveGoPackageBatch(ctx, s, bundles, pending, bundleImports, lc)
+}
+
+func goPackageReverse(ctx context.Context, s resolve.Store, bundles []cold.OriginBundle) error {
+	return promoteGoPackageReverse(ctx, s, bundles)
+}
 
 // goPackageOf returns the Go package clause, or empty when unknown.
 func goPackageOf(imps []cold.ImportRow) string {
@@ -75,8 +83,8 @@ func goPackageOK(ctx context.Context, s resolve.Store, bundleImports map[string]
 }
 
 // resolveGoPackageBatch runs the forward same-package pass on still-loose names.
-func (p *Pipeline) resolveGoPackageBatch(ctx context.Context, bundles []cold.OriginBundle, pending resolve.Pending, bundleImports map[string][]cold.ImportRow, lc *resolve.LookupCache) error {
-	known, err := resolve.KnownFiles(ctx, p, bundles)
+func resolveGoPackageBatch(ctx context.Context, s resolve.Store, bundles []cold.OriginBundle, pending resolve.Pending, bundleImports map[string][]cold.ImportRow, lc *resolve.LookupCache) error {
+	known, err := resolve.KnownFiles(ctx, s, bundles)
 	if err != nil {
 		return err
 	}
@@ -105,14 +113,14 @@ func (p *Pipeline) resolveGoPackageBatch(ctx context.Context, bundles []cold.Ori
 			}
 			linked := false
 			for _, sib := range sibs {
-				ok, err := goPackageOK(ctx, p, bundleImports, lc, importerPkg, sib)
+				ok, err := goPackageOK(ctx, s, bundleImports, lc, importerPkg, sib)
 				if err != nil {
 					return err
 				}
 				if !ok {
 					continue
 				}
-				rows, err := resolve.FileRows(ctx, p, pending, lc, sib, le.Name)
+				rows, err := resolve.FileRows(ctx, s, pending, lc, sib, le.Name)
 				if err != nil {
 					return err
 				}
@@ -146,8 +154,8 @@ func (p *Pipeline) resolveGoPackageBatch(ctx context.Context, bundles []cold.Ori
 }
 
 // promoteGoPackageReverse promotes siblings' loose refs when bundles add entries.
-func (p *Pipeline) promoteGoPackageReverse(ctx context.Context, bundles []cold.OriginBundle) error {
-	known, err := resolve.KnownFiles(ctx, p, bundles)
+func promoteGoPackageReverse(ctx context.Context, s resolve.Store, bundles []cold.OriginBundle) error {
+	known, err := resolve.KnownFiles(ctx, s, bundles)
 	if err != nil {
 		return err
 	}
@@ -178,14 +186,14 @@ func (p *Pipeline) promoteGoPackageReverse(ctx context.Context, bundles []cold.O
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			ok, err := goPackageOK(ctx, p, bundleImports, lc, importerPkg, sib)
+			ok, err := goPackageOK(ctx, s, bundleImports, lc, importerPkg, sib)
 			if err != nil {
 				return err
 			}
 			if !ok {
 				continue
 			}
-			loose, err := p.FetchLooseEnds(ctx, sib)
+			loose, err := s.FetchLooseEnds(ctx, sib)
 			if err != nil {
 				return err
 			}
@@ -220,5 +228,5 @@ func (p *Pipeline) promoteGoPackageReverse(ctx context.Context, bundles []cold.O
 		links = append(links, pr.link)
 		deletes = append(deletes, pr.lose)
 	}
-	return p.PromoteLinks(ctx, links, deletes)
+	return s.PromoteLinks(ctx, links, deletes)
 }
